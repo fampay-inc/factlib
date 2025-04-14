@@ -175,13 +175,20 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 		"timeline", identifyResult.Timeline, 
 		"xLogPos", xLogPos.String())
 	
-	// Start logical replication
+	// Start logical replication using the pglogrepl library with proper formatting
+	// Based on the example in wal-e/controller.go
 	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, xLogPos, pglogrepl.StartReplicationOptions{
 		PluginArgs: []string{
-			fmt.Sprintf("proto_version=1"),
-			fmt.Sprintf("publication_names=%s", w.cfg.PublicationName),
+			"proto_version '1'",
+			"publication_names '" + w.cfg.PublicationName + "'",
 		},
 	})
+
+	w.logger.Debug("started replication with options", 
+		"slot", w.cfg.ReplicationSlotName, 
+		"publication", w.cfg.PublicationName, 
+		"position", xLogPos.String())
+	
 	if err != nil {
 		w.logger.Error("failed to start replication", err, "error", err.Error())
 		return
@@ -263,8 +270,15 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 
 // processLogicalMessage processes a logical replication message
 func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl.Message) {
+	w.logger.Debug("processing logical message", "type", fmt.Sprintf("%T", msg))
+	
 	switch msg := msg.(type) {
 	case *pglogrepl.LogicalDecodingMessage:
+		w.logger.Debug("received logical decoding message", 
+			"prefix", msg.Prefix, 
+			"content_length", len(msg.Content),
+			"transactional", msg.Transactional)
+		
 		if msg.Prefix == outboxChannel {
 			var event common.OutboxEvent
 			if err := json.Unmarshal(msg.Content, &event); err != nil {
@@ -282,16 +296,26 @@ func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl
 				event.CreatedAt = time.Now().UTC()
 			}
 			
-			w.logger.Debug("received outbox event", 
+			w.logger.Info("received outbox event", 
 				"id", event.ID, 
 				"aggregate_type", event.AggregateType,
 				"event_type", event.EventType)
 			
+			// Forward the event to the channel
 			select {
 			case w.events <- event:
+				w.logger.Debug("sent event to channel", "id", event.ID)
 			case <-ctx.Done():
 				return
 			}
+		} else {
+			w.logger.Debug("ignoring message with different prefix", "prefix", msg.Prefix, "expected", outboxChannel)
 		}
+	case *pglogrepl.BeginMessage:
+		w.logger.Debug("received begin message", "final_lsn", msg.FinalLSN, "commit_time", msg.CommitTime)
+	case *pglogrepl.CommitMessage:
+		w.logger.Debug("received commit message", "commit_lsn", msg.CommitLSN, "commit_time", msg.CommitTime)
+	default:
+		w.logger.Debug("received other message type", "type", fmt.Sprintf("%T", msg))
 	}
 }
