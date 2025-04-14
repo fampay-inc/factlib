@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -14,12 +13,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
-	outboxChannel = "outbox_events"
-	pluginName    = "pgoutput"
-	slotName      = "factlib_replication_slot"
+	protoOutboxChannel = "proto_outbox"
+	pluginName         = "pgoutput"
+	slotName           = "factlib_replication_slot"
 )
 
 // WALConfig represents the configuration for the WAL subscriber
@@ -31,6 +31,7 @@ type WALConfig struct {
 	Database            string
 	ReplicationSlotName string
 	PublicationName     string
+	OutboxPrefix        string // Prefix for logical decoding messages
 }
 
 // WALSubscriber implements the common.WALSubscriber interface
@@ -39,7 +40,7 @@ type WALSubscriber struct {
 	replConn  *pgconn.PgConn // Connection for replication
 	queryConn *pgx.Conn      // Connection for regular queries
 	logger    *logger.Logger
-	events    chan common.OutboxEvent
+	events    chan *common.OutboxEvent
 }
 
 // NewWALSubscriber creates a new WAL subscriber
@@ -56,12 +57,12 @@ func NewWALSubscriber(cfg WALConfig, log *logger.Logger) (*WALSubscriber, error)
 	return &WALSubscriber{
 		cfg:    cfg,
 		logger: log,
-		events: make(chan common.OutboxEvent, 100),
+		events: make(chan *common.OutboxEvent, 100),
 	}, nil
 }
 
 // Subscribe subscribes to WAL events and returns a channel of OutboxEvents
-func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan common.OutboxEvent, error) {
+func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *common.OutboxEvent, error) {
 	// Connect using pgconn directly for replication mode
 	var err error
 	w.replConn, err = pgconn.Connect(ctx, w.replicationConnectionString())
@@ -110,6 +111,7 @@ func (w *WALSubscriber) Close() error {
 func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]interface{}, error) {
 	// Create a connection to query replication slot status
 	config, err := pgx.ParseConfig(w.queryConnectionString())
+
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse connection string")
 	}
@@ -122,13 +124,13 @@ func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]in
 
 	// Query the pg_replication_slots view
 	row := conn.QueryRow(ctx, `
-		SELECT 
-			slot_name, 
-			plugin, 
-			active, 
+		SELECT
+			slot_name,
+			plugin,
+			active,
 			confirmed_flush_lsn::text,
 			restart_lsn::text
-		FROM pg_replication_slots 
+		FROM pg_replication_slots
 		WHERE slot_name = $1
 	`, w.cfg.ReplicationSlotName)
 
@@ -145,6 +147,7 @@ func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]in
 		}
 		return nil, errors.Wrap(err, "failed to query replication slot")
 	}
+	w.logger.Debug("replication slot status", "exists", true, "slot_name", slotName, "plugin", plugin, "active", active, "confirmed_flush_lsn", confirmedFlushLSN, "restart_lsn", restartLSN)
 
 	return map[string]interface{}{
 		"exists":              true,
@@ -154,111 +157,6 @@ func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]in
 		"confirmed_flush_lsn": confirmedFlushLSN,
 		"restart_lsn":         restartLSN,
 	}, nil
-}
-
-// PeekReplicationSlotChanges peeks at changes in the replication slot without advancing it
-func (w *WALSubscriber) PeekReplicationSlotChanges(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	// Create a connection to query replication slot changes
-	config, err := pgx.ParseConfig(w.queryConnectionString())
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to parse connection string")
-	}
-
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to database")
-	}
-	defer conn.Close(ctx)
-
-	// Query the replication slot changes
-	rows, err := conn.Query(ctx, `
-		SELECT * FROM pg_logical_slot_peek_changes($1, NULL, NULL) LIMIT $2
-	`, w.cfg.ReplicationSlotName, limit)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to peek replication slot changes")
-	}
-	defer rows.Close()
-
-	var changes []map[string]interface{}
-	for rows.Next() {
-		var lsn, xid, data string
-		err := rows.Scan(&lsn, &xid, &data)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to scan row")
-		}
-
-		changes = append(changes, map[string]interface{}{
-			"lsn":  lsn,
-			"xid":  xid,
-			"data": data,
-		})
-	}
-
-	return changes, nil
-}
-
-// GetBinaryChanges gets binary changes from the replication slot
-func (w *WALSubscriber) GetBinaryChanges(ctx context.Context, limit int) ([]map[string]interface{}, error) {
-	// Create a connection to query replication slot changes
-	config, err := pgx.ParseConfig(w.queryConnectionString())
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to parse connection string")
-	}
-
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to database")
-	}
-	defer conn.Close(ctx)
-
-	// Query the replication slot binary changes
-	rows, err := conn.Query(ctx, `
-		SELECT * FROM pg_logical_slot_get_binary_changes($1, NULL, NULL) LIMIT $2
-	`, w.cfg.ReplicationSlotName, limit)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get binary changes")
-	}
-	defer rows.Close()
-
-	var changes []map[string]interface{}
-	for rows.Next() {
-		var lsn, xid, data string
-		err := rows.Scan(&lsn, &xid, &data)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to scan row")
-		}
-
-		changes = append(changes, map[string]interface{}{
-			"lsn":  lsn,
-			"xid":  xid,
-			"data": data,
-		})
-	}
-
-	return changes, nil
-}
-
-// AdvanceReplicationSlot advances the replication slot to the specified LSN
-func (w *WALSubscriber) AdvanceReplicationSlot(ctx context.Context, lsn string) error {
-	// Create a connection to advance the replication slot
-	config, err := pgx.ParseConfig(w.queryConnectionString())
-	if err != nil {
-		return errors.Wrap(err, "failed to parse connection string")
-	}
-
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return errors.Wrap(err, "failed to connect to database")
-	}
-	defer conn.Close(ctx)
-
-	// Advance the replication slot
-	_, err = conn.Exec(ctx, `SELECT pg_replication_slot_advance($1, $2)`, w.cfg.ReplicationSlotName, lsn)
-	if err != nil {
-		return errors.Wrap(err, "failed to advance replication slot")
-	}
-
-	return nil
 }
 
 // replicationConnectionString returns the connection string for replication
@@ -276,17 +174,13 @@ func (w *WALSubscriber) queryConnectionString() string {
 // ensurePublication ensures the publication exists
 func (w *WALSubscriber) ensurePublication(ctx context.Context) error {
 	var exists bool
-	err := w.queryConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)",
-		w.cfg.PublicationName).Scan(&exists)
+	err := w.queryConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)", w.cfg.PublicationName).Scan(&exists)
 	if err != nil {
 		return errors.Wrap(err, "failed to check if publication exists")
 	}
 
 	if !exists {
-		// Create a minimal publication - we only need it for the replication protocol
-		// The actual messages are captured via pg_logical_emit_message
-		// We need at least one table in the publication for the protocol to work
-		_, err = w.queryConn.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES", w.cfg.PublicationName))
+		_, err = w.queryConn.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s", w.cfg.PublicationName))
 		if err != nil {
 			return errors.Wrap(err, "failed to create publication")
 		}
@@ -299,8 +193,7 @@ func (w *WALSubscriber) ensurePublication(ctx context.Context) error {
 // ensureReplicationSlot ensures the replication slot exists
 func (w *WALSubscriber) ensureReplicationSlot(ctx context.Context) error {
 	var exists bool
-	err := w.queryConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-		w.cfg.ReplicationSlotName).Scan(&exists)
+	err := w.queryConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)", w.cfg.ReplicationSlotName).Scan(&exists)
 	if err != nil {
 		return errors.Wrap(err, "failed to check if replication slot exists")
 	}
@@ -338,6 +231,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 		PluginArgs: []string{
 			"proto_version '1'",
 			"publication_names '" + w.cfg.PublicationName + "'",
+			"messages 'true'",
 		},
 	})
 
@@ -475,106 +369,48 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	}
 }
 
-// processLogicalMessage processes a logical replication message
+// handleProtoMessage processes a Protobuf message from the notification
+func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte) {
+	// Create a pointer to a protobuf OutboxEvent
+	event := &common.OutboxEvent{}
+	if err := proto.Unmarshal(content, event); err != nil {
+		w.logger.Error("Failed to unmarshal Protobuf event", err, "content_length", len(content))
+		return
+	}
+	if event.Id == "" {
+		event.Id = uuid.New().String()
+	}
+	if event.CreatedAt == 0 {
+		event.CreatedAt = time.Now().Unix()
+	}
+	w.logger.Info("Protobuf event received",
+		"id", event.Id,
+		"aggregate_type", event.AggregateType,
+		"aggregate_id", event.AggregateId,
+		"event_type", event.EventType,
+		"payload_size", len(event.Payload))
+	select {
+	case w.events <- event:
+		w.logger.Info("Protobuf event sent to channel", "id", event.Id)
+	case <-ctx.Done():
+		return
+	}
+}
+
 func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl.Message) {
 	// Process logical decoding messages specifically
 	if ldm, ok := msg.(*pglogrepl.LogicalDecodingMessage); ok {
-		w.logger.Info("LOGICAL DECODING MESSAGE",
+		w.logger.Info("Logical decoding message received",
 			"prefix", ldm.Prefix,
 			"transactional", ldm.Transactional,
 			"content_length", len(ldm.Content))
 
-		// Only process messages with our specific prefix
-		if ldm.Prefix == outboxChannel {
-			var event common.OutboxEvent
-			if err := json.Unmarshal(ldm.Content, &event); err != nil {
-				w.logger.Error("failed to unmarshal outbox event", err, "content", string(ldm.Content))
-				return
-			}
+		w.logger.Debug("Checking message prefix", "message_prefix", ldm.Prefix, "configured_prefix", w.cfg.OutboxPrefix)
 
-			// If ID is empty, generate one
-			if event.ID == "" {
-				event.ID = uuid.New().String()
-			}
-
-			// If CreatedAt is zero, set it to now
-			if event.CreatedAt.IsZero() {
-				event.CreatedAt = time.Now().UTC()
-			}
-
-			w.logger.Info("OUTBOX EVENT RECEIVED",
-				"id", event.ID,
-				"aggregate_type", event.AggregateType,
-				"aggregate_id", event.AggregateID,
-				"event_type", event.EventType,
-				"payload_size", len(event.Payload))
-
-			// Forward the event to the channel
-			select {
-			case w.events <- event:
-				w.logger.Info("EVENT SENT TO CHANNEL", "id", event.ID)
-			case <-ctx.Done():
-				return
-			}
+		if ldm.Prefix == w.cfg.OutboxPrefix {
+			w.handleProtoMessage(ctx, ldm.Content)
 		}
-	} else if insertMsg, ok := msg.(*pglogrepl.InsertMessage); ok {
-		// Process insert messages from the test_events table
-		w.logger.Info("INSERT MESSAGE", 
-			"relation", insertMsg.RelationID,
-			"columns", len(insertMsg.Tuple.Columns))
-		
-		// Try to extract the event data from the insert
-		if len(insertMsg.Tuple.Columns) >= 6 {
-			// Extract data from columns (this is a simplistic approach)
-			// Assuming columns are: id, aggregate_type, aggregate_id, event_type, payload, created_at
-			id := string(insertMsg.Tuple.Columns[0].Data)
-			aggregateType := string(insertMsg.Tuple.Columns[1].Data)
-			aggregateID := string(insertMsg.Tuple.Columns[2].Data)
-			eventType := string(insertMsg.Tuple.Columns[3].Data)
-			payload := insertMsg.Tuple.Columns[4].Data
-			
-			// Parse the payload to ensure it matches the expected format
-			var payloadObj map[string]interface{}
-			if err := json.Unmarshal(payload, &payloadObj); err != nil {
-				w.logger.Error("failed to parse payload", err, "payload", string(payload))
-				return
-			}
-			
-			// Re-marshal with compact formatting to match the expected format
-			formattedPayload, err := json.Marshal(payloadObj)
-			if err != nil {
-				w.logger.Error("failed to re-marshal payload", err)
-				return
-			}
-			
-			// Create metadata from the source field
-			metadata := map[string]string{"source": "integration_test"}
-			
-			// Create an event from the extracted data
-			event := common.OutboxEvent{
-				ID:            id,
-				AggregateType: aggregateType,
-				AggregateID:   aggregateID,
-				EventType:     eventType,
-				Payload:       formattedPayload,
-				CreatedAt:     time.Now().UTC(), // Use current time as we can't easily parse the timestamp
-				Metadata:      metadata,
-			}
-			
-			w.logger.Info("TABLE EVENT RECEIVED",
-				"id", event.ID,
-				"aggregate_type", event.AggregateType,
-				"aggregate_id", event.AggregateID,
-				"event_type", event.EventType,
-				"payload_size", len(event.Payload))
-			
-			// Forward the event to the channel
-			select {
-			case w.events <- event:
-				w.logger.Info("TABLE EVENT SENT TO CHANNEL", "id", event.ID)
-			case <-ctx.Done():
-				return
-			}
-		}
+	} else {
+		w.logger.Debug("Received unexpected message type", "type", fmt.Sprintf("%T", msg))
 	}
 }

@@ -3,17 +3,21 @@ package common
 import (
 	"context"
 	"time"
+
+	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
 )
 
-// OutboxEvent represents an event in the outbox pattern
-type OutboxEvent struct {
-	ID           string            `json:"id"`
-	AggregateType string            `json:"aggregate_type"`
-	AggregateID  string            `json:"aggregate_id"`
-	EventType    string            `json:"event_type"`
-	Payload      []byte            `json:"payload"`
-	CreatedAt    time.Time         `json:"created_at"`
-	Metadata     map[string]string `json:"metadata"`
+// OutboxEvent is an alias for the protobuf OutboxEvent
+type OutboxEvent = pb.OutboxEvent
+
+// ConvertTimeToUnix converts a time.Time to Unix timestamp (seconds since epoch)
+func ConvertTimeToUnix(t time.Time) int64 {
+	return t.Unix()
+}
+
+// ConvertUnixToTime converts a Unix timestamp to time.Time
+func ConvertUnixToTime(unix int64) time.Time {
+	return time.Unix(unix, 0).UTC()
 }
 
 // OutboxClient defines the interface for publishing events
@@ -40,7 +44,7 @@ type OutboxWorker interface {
 // EventHandler defines the interface for event handlers
 type EventHandler interface {
 	// Handle handles an event
-	Handle(ctx context.Context, event OutboxEvent) error
+	Handle(ctx context.Context, event *OutboxEvent) error
 }
 
 // KafkaProducer defines the interface for Kafka producers

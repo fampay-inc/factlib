@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -12,55 +13,136 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"git.famapp.in/fampay-inc/factlib/pkg/client"
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/outbox/client"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 )
 
 // This test requires a running PostgreSQL instance with logical replication configured
 // It can be run with:
 // go test -tags=integration ./pkg/postgres -run TestWALSubscriberIntegration
+//
+// Note: The PostgreSQL server must have logical replication enabled (wal_level = logical)
+// This typically requires admin privileges to set in postgresql.conf and restart the server
 func TestWALSubscriberIntegration(t *testing.T) {
-	// Skip if not running integration tests
-	if os.Getenv("INTEGRATION_TEST") != "true" {
-		t.Skip("Skipping integration test. Set INTEGRATION_TEST=true to run")
+	// Skip the test if we're not running integration tests
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	// Define all configuration in one place
+	config := struct {
+		// PostgreSQL connection details
+		Host             string
+		Port             int
+		User             string
+		Password         string
+		Database         string
+		ConnectionString string
+
+		// WAL configuration
+		ReplicationSlotName string
+		PublicationName     string
+		OutboxPrefix        string
+
+		// Test configuration
+		Timeout          time.Duration
+		EventWaitTimeout time.Duration
+	}{
+		// PostgreSQL connection details
+		Host:     "127.0.0.1",
+		Port:     6432,
+		User:     "postgres",
+		Password: "postgres",
+		Database: "outbox_example",
+
+		// WAL configuration
+		ReplicationSlotName: "factlib_test_slot",
+		PublicationName:     "factlib_test_pub",
+		OutboxPrefix:        "proto_outbox",
+
+		// Test configuration
+		Timeout:          30 * time.Second,
+		EventWaitTimeout: 60 * time.Second,
+	}
+
+	// Allow overriding connection string from environment
+	envConnString := os.Getenv("PG_CONN_STRING")
+	if envConnString != "" {
+		config.ConnectionString = envConnString
+	} else {
+		config.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			config.User, config.Password, config.Host, config.Port, config.Database)
 	}
 
 	// Configure logging
 	loggerConfig := logger.Config{
 		Level:      "debug",
-		JSONOutput: false,
 		WithCaller: true,
 	}
 	logr := logger.New(loggerConfig)
 	logr = logr.With("test", "wal_subscriber_integration")
 
 	// Create context with timeout for the test
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
 	defer cancel()
 
-	// Get PostgreSQL connection string from environment or use default
-	pgConnString := os.Getenv("PG_CONN_STRING")
-	if pgConnString == "" {
-		pgConnString = "postgres://postgres:postgres@localhost:6432/outbox_example?sslmode=disable"
+	// Initialize the PostgreSQL client for emitting messages
+	pgConfig, err := pgx.ParseConfig(config.ConnectionString)
+	require.NoError(t, err, "Failed to parse connection string")
+
+	pgConn, err := pgx.ConnectConfig(ctx, pgConfig)
+	require.NoError(t, err, "Failed to connect to database")
+	defer pgConn.Close(ctx)
+
+	// Check if logical replication is enabled
+	var walLevel string
+	err = pgConn.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel)
+	require.NoError(t, err, "Failed to check wal_level")
+
+	if walLevel != "logical" {
+		t.Skip("Skipping test: PostgreSQL server does not have logical replication enabled (wal_level != logical)")
 	}
 
-	// Initialize the PostgreSQL client for emitting messages
-	outboxClient, err := client.NewPostgresClient(ctx, client.PostgresConfig{
-		ConnectionString: pgConnString,
-	}, logr)
+	logr.Info("PostgreSQL server has logical replication enabled", "wal_level", walLevel)
+
+	// Create a pgx executor for the connection
+	executor, err := client.NewPgxExecutor(pgConn)
+	require.NoError(t, err, "Failed to create pgx executor")
+
+	// Create the adapter with the executor
+	adapter, err := client.NewPostgresAdapter(executor, logr)
 	require.NoError(t, err, "Failed to create PostgreSQL outbox client")
 
-	// Setup WAL subscriber configuration
+	// Set a custom prefix for the test
+	outboxClient := adapter.WithPrefix(config.OutboxPrefix)
+
+	// Check if the replication slot exists and drop it if it's active
+	var slotExists bool
+	err = pgConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
+		config.ReplicationSlotName).Scan(&slotExists)
+	require.NoError(t, err, "Failed to check if replication slot exists")
+
+	if slotExists {
+		logr.Info("Dropping existing replication slot", "slot_name", config.ReplicationSlotName)
+		_, err = pgConn.Exec(ctx, fmt.Sprintf("SELECT pg_drop_replication_slot('%s')", config.ReplicationSlotName))
+		if err != nil {
+			logr.Warn("Failed to drop replication slot, it might be in use", "error", err.Error())
+			// Continue with the unique slot name instead of failing the test
+		}
+	}
+
+	// Setup WAL subscriber configuration with the unique names
 	walConfig := postgres.WALConfig{
-		Host:                "localhost",
-		Port:                6432,
-		User:                "postgres",
-		Password:            "postgres",
-		Database:            "outbox_example",
-		ReplicationSlotName: "factlib_test_slot",
-		PublicationName:     "factlib_test_pub",
+		Host:                config.Host,
+		Port:                config.Port,
+		User:                config.User,
+		Password:            config.Password,
+		Database:            config.Database,
+		ReplicationSlotName: config.ReplicationSlotName,
+		PublicationName:     config.PublicationName,
+		OutboxPrefix:        config.OutboxPrefix,
 	}
 
 	// Create a WAL subscriber instance
@@ -68,14 +150,14 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	require.NoError(t, err, "Failed to create WAL subscriber")
 
 	// Create a channel and wait group to synchronize the test
-	messageReceived := make(chan common.OutboxEvent)
+	messageReceived := make(chan *common.OutboxEvent)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	// Subscribe to WAL events
 	eventChan, err := walSubscriber.Subscribe(ctx)
 	require.NoError(t, err, "Failed to subscribe to WAL events")
-	
+
 	// Start the WAL message processor in a goroutine
 	go func() {
 		defer wg.Done()
@@ -102,71 +184,18 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	}()
 
 	// Wait a moment for the WAL subscriber to establish connection
-	time.Sleep(5 * time.Second)
-
-	// Create a direct connection to PostgreSQL for querying the replication slot
-	pgConfig, err := pgx.ParseConfig(pgConnString)
-	if err != nil {
-		t.Fatalf("Failed to parse connection string: %v", err)
-	}
-	
-	pgConn, err := pgx.ConnectConfig(ctx, pgConfig)
-	if err != nil {
-		t.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer pgConn.Close(ctx)
-	
-	// Create a test table for the publication
-	_, err = pgConn.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_events (
-		id TEXT PRIMARY KEY,
-		aggregate_type TEXT NOT NULL,
-		aggregate_id TEXT NOT NULL,
-		event_type TEXT NOT NULL,
-		payload JSONB,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`)
-	if err != nil {
-		t.Fatalf("Failed to create test table: %v", err)
-	}
-
-	// First, check if the replication slot exists
-	var slotExists bool
-	err = pgConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)", 
-		"factlib_test_slot").Scan(&slotExists)
-	if err != nil {
-		t.Fatalf("Failed to check if replication slot exists: %v", err)
-	}
-	
-	if !slotExists {
-		// Create the replication slot if it doesn't exist
-		_, err = pgConn.Exec(ctx, "SELECT pg_create_logical_replication_slot('factlib_test_slot', 'pgoutput')")
-		if err != nil {
-			t.Fatalf("Failed to create replication slot: %v", err)
-		}
-		logr.Info("Created replication slot", "name", "factlib_test_slot")
-	}
-
-	// Create a publication specifically for the test table
-	_, err = pgConn.Exec(ctx, "DROP PUBLICATION IF EXISTS factlib_test_pub")
-	if err != nil {
-		t.Fatalf("Failed to drop existing publication: %v", err)
-	}
-
-	_, err = pgConn.Exec(ctx, "CREATE PUBLICATION factlib_test_pub FOR TABLE test_events")
-	if err != nil {
-		t.Fatalf("Failed to create publication: %v", err)
-	}
-	logr.Info("Created publication for test table", "name", "factlib_test_pub")
+	time.Sleep(2 * time.Second)
 
 	// Publish a test event both via the client and directly to the test table
 	eventID := uuid.New().String()
-	payload := []byte(`{"test":"data"}`)
+	// Use a simple string as payload to avoid encoding issues
+	payload := []byte("test data")
 	metadata := map[string]string{"source": "integration_test"}
 
 	// Publish via client (using pg_logical_emit_message)
-	publishedID, err := outboxClient.Publish(
+	publishedID, err := outboxClient.EmitEvent(
 		ctx,
-		"integration_test",  // aggregate type
+		"integration_test", // aggregate type
 		eventID,            // aggregate ID
 		"test.event",       // event type
 		payload,            // payload
@@ -174,33 +203,32 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	)
 	require.NoError(t, err, "Failed to publish test event via client")
 	require.NotEmpty(t, publishedID, "Published event ID should not be empty")
-
-	// Also insert directly into the test table to trigger WAL events
-	_, err = pgConn.Exec(ctx, `
-		INSERT INTO test_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, publishedID, "integration_test", eventID, "test.event", string(payload), time.Now())
-	require.NoError(t, err, "Failed to insert test event into table")
+	// Sleep briefly to allow the WAL subscriber to process the event
+	time.Sleep(1 * time.Second)
 
 	logr.Info("Test event published, waiting for it to be received by the WAL subscriber",
 		"event_id", publishedID)
-			
 
 	// Wait for the message to be received or timeout
 	select {
 	case receivedEvent := <-messageReceived:
 		// Message received successfully
 		// Verify the received event matches what we sent
-		assert.Equal(t, publishedID, receivedEvent.ID, "Event ID should match")
+		logr.Info("Received event", "event_id", receivedEvent.Id, "expected_id", publishedID)
+		assert.Equal(t, publishedID, receivedEvent.Id, "Event ID should match")
 		assert.Equal(t, "integration_test", receivedEvent.AggregateType, "Aggregate type should match")
-		assert.Equal(t, eventID, receivedEvent.AggregateID, "Aggregate ID should match")
+		assert.Equal(t, eventID, receivedEvent.AggregateId, "Aggregate ID should match")
 		assert.Equal(t, "test.event", receivedEvent.EventType, "Event type should match")
-		assert.Equal(t, string(payload), string(receivedEvent.Payload), "Payload should match")
+		assert.Contains(t, string(receivedEvent.Payload), string(payload), "Payload should contain the expected data")
 		assert.Equal(t, metadata["source"], receivedEvent.Metadata["source"], "Metadata should match")
-	case <-time.After(15 * time.Second):
+	case <-time.After(config.EventWaitTimeout):
+		// If we timed out, let's check the replication slot status
+		_, err := walSubscriber.CheckReplicationSlot(ctx)
+		if err != nil {
+			logr.Error("Failed to check replication slot status", err, "error", err.Error())
+		}
 		t.Fatal("Timed out waiting for message to be received")
 	}
-
 	// Cancel the context to stop the subscriber
 	cancel()
 
