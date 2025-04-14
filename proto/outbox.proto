@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "git.famapp.in/fampay-inc/factlib/pkg/proto";
+
+message OutboxEvent {
+  string id = 1;
+  string aggregate_type = 2;
+  string aggregate_id = 3;
+  string event_type = 4;
+  bytes payload = 5;
+  int64 created_at = 6;
+  map<string, string> metadata = 7;
+}
+
+service OutboxService {
+  rpc PublishEvent(OutboxEvent) returns (PublishResponse) {}
+}
+
+message PublishResponse {
+  string id = 1;
+  bool success = 2;
+  string error = 3;
+}

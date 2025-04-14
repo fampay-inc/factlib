@@ -1,0 +1,15 @@
+# Redpanda Console config with correct broker format
+kafka:
+  brokers:
+    - "redpanda:9092"
+  schemaRegistry:
+    enabled: false
+
+connect:
+  enabled: false
+
+redpanda:
+  adminApi:
+    enabled: true
+    urls:
+      - "http://redpanda:8082"
