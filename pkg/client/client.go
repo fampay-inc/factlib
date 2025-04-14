@@ -62,13 +62,13 @@ func (c *PostgresClient) Publish(ctx context.Context, aggregateType, aggregateID
 	createdAt := time.Now().UTC()
 
 	event := common.OutboxEvent{
-		ID:           eventID,
+		ID:            eventID,
 		AggregateType: aggregateType,
-		AggregateID:  aggregateID,
-		EventType:    eventType,
-		Payload:      payload,
-		CreatedAt:    createdAt,
-		Metadata:     metadata,
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		Payload:       payload,
+		CreatedAt:     createdAt,
+		Metadata:      metadata,
 	}
 
 	eventJSON, err := json.Marshal(event)
@@ -87,6 +87,10 @@ func (c *PostgresClient) Publish(ctx context.Context, aggregateType, aggregateID
 	}()
 
 	// Emit logical replication message directly to WAL
+	// Parameters:
+	// 1. true = transactional (message is part of current transaction)
+	// 2. outboxChannel = prefix for identifying the message
+	// 3. eventJSON = content of the message
 	_, err = tx.Exec(ctx, fmt.Sprintf("SELECT pg_logical_emit_message(true, '%s', $1)", outboxChannel), eventJSON)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to emit logical message")
@@ -96,9 +100,9 @@ func (c *PostgresClient) Publish(ctx context.Context, aggregateType, aggregateID
 		return "", errors.Wrap(err, "failed to commit transaction")
 	}
 
-	c.logger.Debug("published event", 
-		"id", eventID, 
-		"aggregate_type", aggregateType, 
+	c.logger.Debug("published event",
+		"id", eventID,
+		"aggregate_type", aggregateType,
 		"event_type", eventType)
 
 	return eventID, nil

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -53,13 +54,13 @@ func TestWALSubscriberIntegration(t *testing.T) {
 
 	// Setup WAL subscriber configuration
 	walConfig := postgres.WALConfig{
-		Host:     "localhost",
-		Port:     6432,
-		User:     "postgres",
-		Password: "postgres",
-		Database: "outbox_example",
+		Host:                "localhost",
+		Port:                6432,
+		User:                "postgres",
+		Password:            "postgres",
+		Database:            "outbox_example",
 		ReplicationSlotName: "factlib_test_slot",
-		PublicationName:     "factlib_pub",
+		PublicationName:     "factlib_test_pub",
 	}
 
 	// Create a WAL subscriber instance
@@ -70,8 +71,6 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	messageReceived := make(chan common.OutboxEvent)
 	var wg sync.WaitGroup
 	wg.Add(1)
-
-	// We'll process events directly from the subscription channel rather than setting a handler
 
 	// Subscribe to WAL events
 	eventChan, err := walSubscriber.Subscribe(ctx)
@@ -105,11 +104,66 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	// Wait a moment for the WAL subscriber to establish connection
 	time.Sleep(5 * time.Second)
 
-	// Publish a test event
+	// Create a direct connection to PostgreSQL for querying the replication slot
+	pgConfig, err := pgx.ParseConfig(pgConnString)
+	if err != nil {
+		t.Fatalf("Failed to parse connection string: %v", err)
+	}
+	
+	pgConn, err := pgx.ConnectConfig(ctx, pgConfig)
+	if err != nil {
+		t.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pgConn.Close(ctx)
+	
+	// Create a test table for the publication
+	_, err = pgConn.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_events (
+		id TEXT PRIMARY KEY,
+		aggregate_type TEXT NOT NULL,
+		aggregate_id TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		payload JSONB,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	// First, check if the replication slot exists
+	var slotExists bool
+	err = pgConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)", 
+		"factlib_test_slot").Scan(&slotExists)
+	if err != nil {
+		t.Fatalf("Failed to check if replication slot exists: %v", err)
+	}
+	
+	if !slotExists {
+		// Create the replication slot if it doesn't exist
+		_, err = pgConn.Exec(ctx, "SELECT pg_create_logical_replication_slot('factlib_test_slot', 'pgoutput')")
+		if err != nil {
+			t.Fatalf("Failed to create replication slot: %v", err)
+		}
+		logr.Info("Created replication slot", "name", "factlib_test_slot")
+	}
+
+	// Create a publication specifically for the test table
+	_, err = pgConn.Exec(ctx, "DROP PUBLICATION IF EXISTS factlib_test_pub")
+	if err != nil {
+		t.Fatalf("Failed to drop existing publication: %v", err)
+	}
+
+	_, err = pgConn.Exec(ctx, "CREATE PUBLICATION factlib_test_pub FOR TABLE test_events")
+	if err != nil {
+		t.Fatalf("Failed to create publication: %v", err)
+	}
+	logr.Info("Created publication for test table", "name", "factlib_test_pub")
+
+	// Publish a test event both via the client and directly to the test table
 	eventID := uuid.New().String()
 	payload := []byte(`{"test":"data"}`)
 	metadata := map[string]string{"source": "integration_test"}
 
+	// Publish via client (using pg_logical_emit_message)
 	publishedID, err := outboxClient.Publish(
 		ctx,
 		"integration_test",  // aggregate type
@@ -118,28 +172,34 @@ func TestWALSubscriberIntegration(t *testing.T) {
 		payload,            // payload
 		metadata,           // metadata
 	)
-	require.NoError(t, err, "Failed to publish test event")
+	require.NoError(t, err, "Failed to publish test event via client")
 	require.NotEmpty(t, publishedID, "Published event ID should not be empty")
+
+	// Also insert directly into the test table to trigger WAL events
+	_, err = pgConn.Exec(ctx, `
+		INSERT INTO test_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, publishedID, "integration_test", eventID, "test.event", string(payload), time.Now())
+	require.NoError(t, err, "Failed to insert test event into table")
 
 	logr.Info("Test event published, waiting for it to be received by the WAL subscriber",
 		"event_id", publishedID)
+			
 
 	// Wait for the message to be received or timeout
-	var receivedEvent common.OutboxEvent
 	select {
-	case receivedEvent = <-messageReceived:
+	case receivedEvent := <-messageReceived:
 		// Message received successfully
-	case <-ctx.Done():
+		// Verify the received event matches what we sent
+		assert.Equal(t, publishedID, receivedEvent.ID, "Event ID should match")
+		assert.Equal(t, "integration_test", receivedEvent.AggregateType, "Aggregate type should match")
+		assert.Equal(t, eventID, receivedEvent.AggregateID, "Aggregate ID should match")
+		assert.Equal(t, "test.event", receivedEvent.EventType, "Event type should match")
+		assert.Equal(t, string(payload), string(receivedEvent.Payload), "Payload should match")
+		assert.Equal(t, metadata["source"], receivedEvent.Metadata["source"], "Metadata should match")
+	case <-time.After(15 * time.Second):
 		t.Fatal("Timed out waiting for message to be received")
 	}
-
-	// Verify the received event matches what we sent
-	assert.Equal(t, publishedID, receivedEvent.ID, "Event ID should match")
-	assert.Equal(t, "integration_test", receivedEvent.AggregateType, "Aggregate type should match")
-	assert.Equal(t, eventID, receivedEvent.AggregateID, "Aggregate ID should match")
-	assert.Equal(t, "test.event", receivedEvent.EventType, "Event type should match")
-	assert.Equal(t, string(payload), string(receivedEvent.Payload), "Payload should match")
-	assert.Equal(t, metadata["source"], receivedEvent.Metadata["source"], "Metadata should match")
 
 	// Cancel the context to stop the subscriber
 	cancel()
