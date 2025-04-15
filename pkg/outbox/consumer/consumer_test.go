@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"google.golang.org/protobuf/proto"
 )
 
 // MockPgxConn is a mock for pgx.Conn
@@ -132,8 +131,7 @@ func TestHandleProtoMessage(t *testing.T) {
 	consumer.protoHandlers["user"] = mockHandler.Handle
 
 	// Handle the message
-	eventProto, _ := proto.Marshal(event)
-	consumer.handleProtoMessage(context.Background(), eventProto)
+	consumer.handleProtoEvent(context.Background(), event)
 
 	// Verify the handler was called
 	mockHandler.AssertExpectations(t)
