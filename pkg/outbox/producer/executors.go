@@ -24,8 +24,8 @@ func NewPgxExecutor(conn any) (*PgxExecutor, error) {
 	}
 }
 
-// ExecSQL executes a SQL query using a pgx connection
-func (e *PgxExecutor) ExecSQL(ctx context.Context, query string, args ...any) error {
+// Exec executes a SQL query using a pgx connection
+func (e *PgxExecutor) Exec(ctx context.Context, query string, args ...any) error {
 	switch conn := e.conn.(type) {
 	case *pgx.Conn:
 		_, err := conn.Exec(ctx, query, args...)
@@ -56,8 +56,8 @@ func NewSQLDBExecutor(conn any) (*SQLDBExecutor, error) {
 	}
 }
 
-// ExecSQL executes a SQL query using a database/sql connection
-func (e *SQLDBExecutor) ExecSQL(ctx context.Context, query string, args ...any) error {
+// Exec executes a SQL query using a database/sql connection
+func (e *SQLDBExecutor) Exec(ctx context.Context, query string, args ...any) error {
 	switch conn := e.conn.(type) {
 	case *sql.DB:
 		_, err := conn.ExecContext(ctx, query, args...)
@@ -75,8 +75,8 @@ type MockExecutor struct {
 	ExecSQLFunc func(ctx context.Context, query string, args ...any) error
 }
 
-// ExecSQL calls the mock function
-func (m *MockExecutor) ExecSQL(ctx context.Context, query string, args ...any) error {
+// Exec calls the mock function
+func (m *MockExecutor) Exec(ctx context.Context, query string, args ...any) error {
 	if m.ExecSQLFunc != nil {
 		return m.ExecSQLFunc(ctx, query, args...)
 	}

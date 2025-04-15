@@ -30,7 +30,7 @@ type OutboxProducer interface {
 
 // SQLExecutor defines an interface for executing SQL queries
 type SQLExecutor interface {
-	ExecSQL(ctx context.Context, query string, args ...any) error
+	Exec(ctx context.Context, query string, args ...any) error
 }
 
 // PostgresAdapter is the implementation of OutboxProducer that works with different PostgreSQL connection types
@@ -90,7 +90,7 @@ func (a *PostgresAdapter) EmitEvent(ctx context.Context, aggregateType, aggregat
 	}
 	a.logger.Debug("proto bytes", "proto", protoBytes)
 	sqlQuery := "SELECT pg_logical_emit_message(true, $1, $2::bytea)"
-	err = a.executor.ExecSQL(ctx, sqlQuery, a.prefix, protoBytes)
+	err = a.executor.Exec(ctx, sqlQuery, a.prefix, protoBytes)
 
 	if err != nil {
 		return "", errors.Wrap(err, "failed to emit logical message")
@@ -126,7 +126,7 @@ func ValidateConnection(ctx context.Context, conn any) error {
 	}
 
 	// Query PostgreSQL version using the executor
-	err = executor.ExecSQL(ctx, "SELECT version()")
+	err = executor.Exec(ctx, "SELECT version()")
 	if err != nil {
 		return errors.Wrap(err, "failed to get PostgreSQL version")
 	}

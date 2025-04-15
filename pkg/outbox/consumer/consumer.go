@@ -16,22 +16,20 @@ import (
 )
 
 const (
-	defaultJsonPrefix   = "outbox"
-	defaultProtoPrefix  = "proto_outbox"
 	defaultPollInterval = 100 * time.Millisecond
 )
 
 // OutboxConsumer reads outbox events from PostgreSQL WAL and publishes them to handlers
 type OutboxConsumer struct {
-	conn            *pgx.Conn
-	jsonPrefix      string
-	protoPrefix     string
-	logger          *logger.Logger
-	handlers        map[string]EventHandler
-	protoHandlers   map[string]ProtoEventHandler
-	pollInterval    time.Duration
-	stopCh          chan struct{}
-	wg              sync.WaitGroup
+	conn          *pgx.Conn
+	jsonPrefix    string
+	protoPrefix   string
+	logger        *logger.Logger
+	handlers      map[string]EventHandler
+	protoHandlers map[string]ProtoEventHandler
+	pollInterval  time.Duration
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
 }
 
 // EventHandler handles JSON outbox events
@@ -43,7 +41,6 @@ type ProtoEventHandler func(ctx context.Context, event *pb.OutboxEvent) error
 // Config represents the configuration for the OutboxConsumer
 type Config struct {
 	ConnectionString string
-	JsonPrefix       string
 	ProtoPrefix      string
 	PollInterval     time.Duration
 }
@@ -59,15 +56,7 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
 
-	jsonPrefix := cfg.JsonPrefix
-	if jsonPrefix == "" {
-		jsonPrefix = defaultJsonPrefix
-	}
-
 	protoPrefix := cfg.ProtoPrefix
-	if protoPrefix == "" {
-		protoPrefix = defaultProtoPrefix
-	}
 
 	pollInterval := cfg.PollInterval
 	if pollInterval == 0 {
@@ -75,14 +64,13 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 	}
 
 	return &OutboxConsumer{
-		conn:            conn,
-		jsonPrefix:      jsonPrefix,
-		protoPrefix:     protoPrefix,
-		logger:          log,
-		handlers:        make(map[string]EventHandler),
-		protoHandlers:   make(map[string]ProtoEventHandler),
-		pollInterval:    pollInterval,
-		stopCh:          make(chan struct{}),
+		conn:          conn,
+		protoPrefix:   protoPrefix,
+		logger:        log,
+		handlers:      make(map[string]EventHandler),
+		protoHandlers: make(map[string]ProtoEventHandler),
+		pollInterval:  pollInterval,
+		stopCh:        make(chan struct{}),
 	}, nil
 }
 
@@ -137,8 +125,8 @@ func (s *OutboxConsumer) startListener(ctx context.Context) {
 		return
 	}
 
-	s.logger.Info("started notification listener", 
-		"json_channel", s.jsonPrefix, 
+	s.logger.Info("started notification listener",
+		"json_channel", s.jsonPrefix,
 		"proto_channel", s.protoPrefix)
 
 	ticker := time.NewTicker(s.pollInterval)
@@ -178,9 +166,9 @@ func (s *OutboxConsumer) handleProtoMessage(ctx context.Context, content []byte)
 		return
 	}
 
-	s.logger.Debug("received Protobuf event", 
-		"id", event.Id, 
-		"aggregate_type", event.AggregateType, 
+	s.logger.Debug("received Protobuf event",
+		"id", event.Id,
+		"aggregate_type", event.AggregateType,
 		"event_type", event.EventType)
 
 	handler, ok := s.protoHandlers[event.AggregateType]
@@ -190,10 +178,10 @@ func (s *OutboxConsumer) handleProtoMessage(ctx context.Context, content []byte)
 	}
 
 	if err := handler(ctx, event); err != nil {
-		s.logger.Error("failed to handle event", 
-			err, 
-			"id", event.Id, 
-			"aggregate_type", event.AggregateType, 
+		s.logger.Error("failed to handle event",
+			err,
+			"id", event.Id,
+			"aggregate_type", event.AggregateType,
 			"event_type", event.EventType)
 		return
 	}

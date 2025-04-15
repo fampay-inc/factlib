@@ -65,7 +65,7 @@ func (m *MockSqlDB) QueryRowContext(ctx context.Context, query string, args ...i
 
 func TestNewPostgresAdapter(t *testing.T) {
 	log := &logger.Logger{}
-	
+
 	// Test with valid executor
 	t.Run("valid executor", func(t *testing.T) {
 		mockExecutor := &MockExecutor{}
@@ -74,7 +74,7 @@ func TestNewPostgresAdapter(t *testing.T) {
 		assert.NotNil(t, adapter)
 		assert.Equal(t, defaultOutboxPrefix, adapter.prefix)
 	})
-	
+
 	// Test with nil executor
 	t.Run("nil executor", func(t *testing.T) {
 		adapter, err := NewPostgresAdapter(nil, log)
@@ -87,14 +87,14 @@ func TestNewPostgresAdapter(t *testing.T) {
 func TestWithPrefix(t *testing.T) {
 	log := &logger.Logger{}
 	mockExecutor := &MockExecutor{}
-	
+
 	adapter, err := NewPostgresAdapter(mockExecutor, log)
 	assert.NoError(t, err)
-	
+
 	// Test with custom prefix
 	customPrefix := "custom_prefix"
 	result := adapter.WithPrefix(customPrefix)
-	
+
 	// Assert the adapter was returned and prefix was updated
 	assert.Equal(t, adapter, result)
 	assert.Equal(t, customPrefix, adapter.prefix)
@@ -103,7 +103,7 @@ func TestWithPrefix(t *testing.T) {
 func TestEmitEvent(t *testing.T) {
 	ctx := context.Background()
 	log := &logger.Logger{}
-	
+
 	// Create a mock executor
 	execCalled := false
 	mockExecutor := &MockExecutor{
@@ -115,34 +115,34 @@ func TestEmitEvent(t *testing.T) {
 			return nil
 		},
 	}
-	
+
 	adapter, err := NewPostgresAdapter(mockExecutor, log)
 	assert.NoError(t, err)
-	
+
 	// Test with valid event
 	eventID, err := adapter.EmitEvent(ctx, "test_aggregate", "123", "test_event", []byte(`{"test":"data"}`), map[string]string{"key": "value"})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, eventID)
 	assert.True(t, execCalled)
-	
+
 	// Test with missing aggregate type
 	eventID, err = adapter.EmitEvent(ctx, "", "123", "test_event", []byte(`{"test":"data"}`), nil)
 	assert.Error(t, err)
 	assert.Empty(t, eventID)
 	assert.Contains(t, err.Error(), "aggregate type is required")
-	
+
 	// Test with missing aggregate ID
 	eventID, err = adapter.EmitEvent(ctx, "test_aggregate", "", "test_event", []byte(`{"test":"data"}`), nil)
 	assert.Error(t, err)
 	assert.Empty(t, eventID)
 	assert.Contains(t, err.Error(), "aggregate ID is required")
-	
+
 	// Test with missing event type
 	eventID, err = adapter.EmitEvent(ctx, "test_aggregate", "123", "", []byte(`{"test":"data"}`), nil)
 	assert.Error(t, err)
 	assert.Empty(t, eventID)
 	assert.Contains(t, err.Error(), "event type is required")
-	
+
 	// Test with executor error
 	mockExecutor.ExecSQLFunc = func(ctx context.Context, query string, args ...any) error {
 		return errors.New("executor error")
@@ -173,7 +173,7 @@ func TestValidateConnection(t *testing.T) {
 		mockQuerier.On("QueryVersion", mock.Anything).Return("PostgreSQL 14.0", nil)
 
 		// Create a custom validator that uses our mock
-		validator := func(ctx context.Context, conn any) error {
+		validator := func(ctx context.Context, _ any) error {
 			// Skip the connection type check and use our mock directly
 			_, err := mockQuerier.QueryVersion(ctx)
 			return err
