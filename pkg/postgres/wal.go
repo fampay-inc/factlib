@@ -17,18 +17,12 @@ import (
 )
 
 const (
-	protoOutboxChannel = "proto_outbox"
-	pluginName         = "pgoutput"
-	slotName           = "factlib_replication_slot"
+	pluginName = "pgoutput"
 )
 
 // WALConfig represents the configuration for the WAL subscriber
 type WALConfig struct {
-	Host                string
-	Port                int
-	User                string
-	Password            string
-	Database            string
+	DatabaseURL         string
 	ReplicationSlotName string
 	PublicationName     string
 	OutboxPrefix        string // Prefix for logical decoding messages
@@ -45,15 +39,6 @@ type WALSubscriber struct {
 
 // NewWALSubscriber creates a new WAL subscriber
 func NewWALSubscriber(cfg WALConfig, log *logger.Logger) (*WALSubscriber, error) {
-	if cfg.ReplicationSlotName == "" {
-		cfg.ReplicationSlotName = slotName
-	}
-
-	// Use a default publication name if not provided
-	if cfg.PublicationName == "" {
-		cfg.PublicationName = "factlib_pub"
-	}
-
 	return &WALSubscriber{
 		cfg:    cfg,
 		logger: log,
@@ -71,7 +56,7 @@ func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *common.OutboxEve
 	}
 
 	// Create a separate connection for regular queries
-	w.queryConn, err = pgx.Connect(ctx, w.queryConnectionString())
+	w.queryConn, err = pgx.Connect(ctx, w.cfg.DatabaseURL)
 	if err != nil {
 		w.Close()
 		return nil, errors.Wrap(err, "failed to connect to database for queries")
@@ -110,7 +95,7 @@ func (w *WALSubscriber) Close() error {
 // CheckReplicationSlot checks the status of the replication slot
 func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]interface{}, error) {
 	// Create a connection to query replication slot status
-	config, err := pgx.ParseConfig(w.queryConnectionString())
+	config, err := pgx.ParseConfig(w.cfg.DatabaseURL)
 
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse connection string")
@@ -161,14 +146,7 @@ func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]in
 
 // replicationConnectionString returns the connection string for replication
 func (w *WALSubscriber) replicationConnectionString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?replication=database",
-		w.cfg.User, w.cfg.Password, w.cfg.Host, w.cfg.Port, w.cfg.Database)
-}
-
-// queryConnectionString returns the connection string for regular queries
-func (w *WALSubscriber) queryConnectionString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
-		w.cfg.User, w.cfg.Password, w.cfg.Host, w.cfg.Port, w.cfg.Database)
+	return fmt.Sprintf("%s?replication=database", w.cfg.DatabaseURL)
 }
 
 // ensurePublication ensures the publication exists

@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -34,12 +33,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	// Define all configuration in one place
 	config := struct {
 		// PostgreSQL connection details
-		Host             string
-		Port             int
-		User             string
-		Password         string
-		Database         string
-		ConnectionString string
+		DatabaseURL string
 
 		// WAL configuration
 		ReplicationSlotName string
@@ -51,29 +45,14 @@ func TestWALSubscriberIntegration(t *testing.T) {
 		EventWaitTimeout time.Duration
 	}{
 		// PostgreSQL connection details
-		Host:     "127.0.0.1",
-		Port:     6432,
-		User:     "postgres",
-		Password: "postgres",
-		Database: "outbox_example",
-
+		DatabaseURL: "postgres://postgres:postgres@127.0.0.1:6432/outbox_example",
 		// WAL configuration
 		ReplicationSlotName: "factlib_test_slot",
 		PublicationName:     "factlib_test_pub",
 		OutboxPrefix:        "proto_outbox",
-
 		// Test configuration
 		Timeout:          30 * time.Second,
-		EventWaitTimeout: 60 * time.Second,
-	}
-
-	// Allow overriding connection string from environment
-	envConnString := os.Getenv("PG_CONN_STRING")
-	if envConnString != "" {
-		config.ConnectionString = envConnString
-	} else {
-		config.ConnectionString = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-			config.User, config.Password, config.Host, config.Port, config.Database)
+		EventWaitTimeout: 30 * time.Second,
 	}
 
 	// Configure logging
@@ -81,6 +60,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 		Level:      "debug",
 		WithCaller: true,
 	}
+
 	logr := logger.New(loggerConfig)
 	logr = logr.With("test", "wal_subscriber_integration")
 
@@ -89,7 +69,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	defer cancel()
 
 	// Initialize the PostgreSQL client for emitting messages
-	pgConfig, err := pgx.ParseConfig(config.ConnectionString)
+	pgConfig, err := pgx.ParseConfig(config.DatabaseURL)
 	require.NoError(t, err, "Failed to parse connection string")
 
 	pgConn, err := pgx.ConnectConfig(ctx, pgConfig)
@@ -135,11 +115,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 
 	// Setup WAL subscriber configuration with the unique names
 	walConfig := postgres.WALConfig{
-		Host:                config.Host,
-		Port:                config.Port,
-		User:                config.User,
-		Password:            config.Password,
-		Database:            config.Database,
+		DatabaseURL:         config.DatabaseURL,
 		ReplicationSlotName: config.ReplicationSlotName,
 		PublicationName:     config.PublicationName,
 		OutboxPrefix:        config.OutboxPrefix,
