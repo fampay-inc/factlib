@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -44,15 +42,23 @@ func main() {
 	}
 
 	// Start replication
-	err = pglogrepl.StartReplication(context.Background(), conn, slotName, sysident.XLogPos, pglogrepl.StartReplicationOptions{PluginArgs: []string{"proto_version '1'", "publication_names 'factlib_test_pub'"}})
+	err = pglogrepl.StartReplication(
+		context.Background(),
+		conn,
+		slotName,
+		sysident.XLogPos,
+		pglogrepl.StartReplicationOptions{
+			PluginArgs: []string{
+				"proto_version '1'",
+				"publication_names 'factlib_test_pub'",
+				"messages 'true'",
+			},
+		})
 	if err != nil {
 		log.Fatalf("StartReplication failed: %v", err)
 	}
 
-	// Setup signal handling
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
+	ctx := context.Background()
 	// Get a regular connection to query the current LSN
 	regularConn, err := pgx.Connect(ctx, connString)
 	if err != nil {
@@ -158,13 +164,6 @@ func main() {
 			}
 		default:
 			log.Printf("Received unexpected message: %T", msg)
-		}
-
-		select {
-		case <-ctx.Done():
-			log.Println("Received interrupt signal, stopping replication")
-			return
-		default:
 		}
 	}
 }
