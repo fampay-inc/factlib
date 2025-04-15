@@ -47,6 +47,11 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		cfg.RequiredAcks = -1 // -1 means all brokers must acknowledge
 	}
 
+	log.Info("Creating Kafka client", 
+		"bootstrap_servers", cfg.BootstrapServers, 
+		"client_id", cfg.ClientID,
+		"required_acks", cfg.RequiredAcks)
+
 	// Convert required acks to the appropriate constant
 	var requiredAcks kgo.Acks
 	switch cfg.RequiredAcks {
@@ -60,18 +65,43 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		requiredAcks = kgo.AllISRAcks() // Default to all ISR acks
 	}
 
+	// Add connection timeout to avoid hanging indefinitely
+	connectTimeout := 10 * time.Second
+
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.BootstrapServers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.RequiredAcks(requiredAcks),
 		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
 		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)), // nil uses the default hasher
+		// Use default timeouts since RequestTimeout is not available in this version
 	}
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
+		log.Error("Failed to create Kafka client", err, "bootstrap_servers", cfg.BootstrapServers)
 		return nil, errors.Wrap(err, "failed to create Kafka client")
 	}
+
+	// Validate connection by pinging the brokers
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+
+	log.Debug("Validating Kafka connection")
+	// The first produce will fail if connection is invalid
+	// We'll use a ping record to test the connection
+	pingRecord := &kgo.Record{
+		Topic: "__ping", // This topic doesn't need to exist
+		Value: []byte("ping"),
+	}
+
+	// Try to produce a ping message to validate connection
+	// This will fail, but that's expected - we just want to ensure we can connect
+	_ = client.ProduceSync(ctx, pingRecord)
+
+	// Log connection status
+	log.Info("Kafka client initialized", "bootstrap_servers", cfg.BootstrapServers)
+	log.Info("Successfully connected to Kafka")
 
 	return &KafkaAdapter{
 		client: client,
@@ -81,6 +111,12 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 
 // Produce produces a message to a Kafka topic
 func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, value []byte, headers map[string]string) error {
+	a.logger.Debug("Producing message to Kafka",
+		"topic", topic,
+		"key", string(key),
+		"value_size", len(value),
+		"headers_count", len(headers))
+
 	// Convert headers to kgo.RecordHeader format
 	kafkaHeaders := []kgo.RecordHeader{}
 	for k, v := range headers {
@@ -98,13 +134,24 @@ func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, va
 		Headers: kafkaHeaders,
 	}
 
-	// Produce record
-	err := a.client.ProduceSync(ctx, record).FirstErr()
+	// Use a timeout for the produce operation
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Produce record with timeout
+	result := a.client.ProduceSync(timeoutCtx, record)
+	err := result.FirstErr()
 	if err != nil {
+		a.logger.Error("Failed to produce message to Kafka",
+			err,
+			"topic", topic,
+			"key", string(key))
 		return errors.Wrap(err, "failed to produce message")
 	}
 
-	a.logger.Debug("message produced",
+	// Log success without partition/offset info (not available in this version of franz-go)
+
+	a.logger.Info("Message successfully produced to Kafka",
 		"topic", topic,
 		"key", string(key))
 

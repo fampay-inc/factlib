@@ -80,7 +80,7 @@ func OutboxService(ctx context.Context) error {
 
 	// Set up Kafka with exactly-once semantics
 	kafkaConfig := consumer.KafkaConfig{
-		BootstrapServers: []string{"kafka:9092"},
+		BootstrapServers: []string{"localhost:9092"}, // Use localhost instead of container name
 		ClientID:         "outbox-service",
 		RequiredAcks:     -1, // All ISR acks
 	}
@@ -110,14 +110,17 @@ func OutboxService(ctx context.Context) error {
 		log.Info("Processing user event",
 			"id", event.Id,
 			"aggregate_id", event.AggregateId,
-			"event_type", event.EventType)
+			"event_type", event.EventType,
+			"payload_size", len(event.Payload))
 
 		// Publish to Kafka
 		key := []byte(event.AggregateId)
 		value, err := proto.Marshal(event)
 		if err != nil {
+			log.Error("Failed to marshal event", err, "event_id", event.Id)
 			return err
 		}
+		log.Debug("Marshaled event to protobuf", "event_id", event.Id, "value_size", len(value))
 
 		// Add headers
 		headers := map[string]string{
@@ -126,7 +129,19 @@ func OutboxService(ctx context.Context) error {
 		}
 
 		// Publish to Kafka
-		return kafkaAdapter.Produce(ctx, "user-events", key, value, headers)
+		log.Debug("Attempting to produce message to Kafka", 
+			"topic", "user-events", 
+			"key", string(key),
+			"bootstrap_servers", kafkaConfig.BootstrapServers)
+		
+		err = kafkaAdapter.Produce(ctx, "user-events", key, value, headers)
+		if err != nil {
+			log.Error("Failed to produce message to Kafka", err, "event_id", event.Id)
+			return err
+		}
+		
+		log.Info("Successfully produced message to Kafka", "event_id", event.Id, "topic", "user-events")
+		return nil
 	})
 
 	// Start the consumer
