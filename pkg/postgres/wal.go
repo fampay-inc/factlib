@@ -208,7 +208,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, xLogPos, pglogrepl.StartReplicationOptions{
 		PluginArgs: []string{
 			"proto_version '1'",
-			"publication_names '" + w.cfg.PublicationName + "'",
+			fmt.Sprintf("publication_names '%s'", w.cfg.PublicationName),
 			"messages 'true'",
 		},
 	})
@@ -226,7 +226,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	w.logger.Info("started replication", "slot", w.cfg.ReplicationSlotName)
 
 	// Send standby status updates more frequently to ensure we acknowledge messages quickly
-	standbyMessageTimeout := time.Second * 3
+	standbyMessageTimeout := time.Second * 5
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
 	for {
@@ -251,7 +251,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 		}
 
 		// Set a timeout for receiving messages
-		receiveCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+		receiveCtx, cancel := context.WithTimeout(ctx, standbyMessageTimeout)
 		rawMsg, err := w.replConn.ReceiveMessage(receiveCtx)
 		cancel()
 
