@@ -2,17 +2,14 @@ package consumer
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pkg/errors"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -21,15 +18,14 @@ const (
 
 // OutboxConsumer reads outbox events from PostgreSQL WAL and publishes them to handlers
 type OutboxConsumer struct {
-	conn          *pgx.Conn
-	jsonPrefix    string
-	protoPrefix   string
+	walSubscriber *postgres.WALSubscriber
 	logger        *logger.Logger
 	handlers      map[string]EventHandler
 	protoHandlers map[string]ProtoEventHandler
-	pollInterval  time.Duration
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 // EventHandler handles JSON outbox events
@@ -40,9 +36,10 @@ type ProtoEventHandler func(ctx context.Context, event *pb.OutboxEvent) error
 
 // Config represents the configuration for the OutboxConsumer
 type Config struct {
-	ConnectionString string
-	ProtoPrefix      string
-	PollInterval     time.Duration
+	ConnectionString  string
+	ProtoPrefix       string
+	ReplicationSlotName string
+	PublicationName     string
 }
 
 // NewOutboxConsumer creates a new OutboxConsumer
@@ -51,26 +48,46 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 		return nil, errors.New("connection string is required")
 	}
 
-	conn, err := pgx.Connect(ctx, cfg.ConnectionString)
+	if cfg.ProtoPrefix == "" {
+		return nil, errors.New("proto prefix is required")
+	}
+
+	// Default values for replication slot and publication if not provided
+	replicationSlotName := cfg.ReplicationSlotName
+	if replicationSlotName == "" {
+		replicationSlotName = "outbox_slot"
+	}
+
+	publicationName := cfg.PublicationName
+	if publicationName == "" {
+		publicationName = "outbox_pub"
+	}
+
+	// Create WAL subscriber configuration
+	walConfig := postgres.WALConfig{
+		DatabaseURL:         cfg.ConnectionString,
+		ReplicationSlotName: replicationSlotName,
+		PublicationName:     publicationName,
+		OutboxPrefix:        cfg.ProtoPrefix,
+	}
+
+	// Create WAL subscriber
+	walSubscriber, err := postgres.NewWALSubscriber(walConfig, log)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to database")
+		return nil, errors.Wrap(err, "failed to create WAL subscriber")
 	}
 
-	protoPrefix := cfg.ProtoPrefix
-
-	pollInterval := cfg.PollInterval
-	if pollInterval == 0 {
-		pollInterval = defaultPollInterval
-	}
+	// Create context with cancellation for the consumer
+	consumerCtx, cancel := context.WithCancel(context.Background())
 
 	return &OutboxConsumer{
-		conn:          conn,
-		protoPrefix:   protoPrefix,
+		walSubscriber: walSubscriber,
 		logger:        log,
 		handlers:      make(map[string]EventHandler),
 		protoHandlers: make(map[string]ProtoEventHandler),
-		pollInterval:  pollInterval,
 		stopCh:        make(chan struct{}),
+		ctx:           consumerCtx,
+		cancel:        cancel,
 	}, nil
 }
 
@@ -86,103 +103,96 @@ func (s *OutboxConsumer) RegisterProtoHandler(aggregateType string, handler Prot
 
 // Start starts the OutboxConsumer
 func (s *OutboxConsumer) Start(ctx context.Context) error {
-	// Start the notification listener
+	// Subscribe to WAL events
+	events, err := s.walSubscriber.Subscribe(s.ctx)
+	if err != nil {
+		return errors.Wrap(err, "failed to subscribe to WAL events")
+	}
+
+	// Start the event processor
 	s.wg.Add(1)
-	go s.startListener(ctx)
+	go s.processEvents(events)
 
 	return nil
 }
 
 // Stop stops the OutboxConsumer
 func (s *OutboxConsumer) Stop() error {
+	// Cancel the context to signal all goroutines to stop
+	s.cancel()
+	
+	// Close the stop channel for backward compatibility
 	close(s.stopCh)
+	
+	// Wait for all goroutines to finish
 	s.wg.Wait()
-	return s.conn.Close(context.Background())
+	
+	// Close the WAL subscriber
+	return s.walSubscriber.Close()
 }
 
-// startListener starts the notification listener for logical decoding messages
-func (s *OutboxConsumer) startListener(ctx context.Context) {
+// processEvents processes events from the WAL subscriber
+func (s *OutboxConsumer) processEvents(events <-chan *common.OutboxEvent) {
 	defer s.wg.Done()
-
-	// Create a separate connection for listening to notifications
-	listenConn, err := pgx.Connect(ctx, s.conn.Config().ConnString())
-	if err != nil {
-		s.logger.Error("failed to create listener connection", err)
-		return
-	}
-	defer listenConn.Close(context.Background())
-
-	// Listen for notifications on the JSON and Protobuf channels
-	_, err = listenConn.Exec(ctx, fmt.Sprintf("LISTEN %s", s.jsonPrefix))
-	if err != nil {
-		s.logger.Error("failed to listen on JSON channel", err)
-		return
-	}
-
-	_, err = listenConn.Exec(ctx, fmt.Sprintf("LISTEN %s", s.protoPrefix))
-	if err != nil {
-		s.logger.Error("failed to listen on Protobuf channel", err)
-		return
-	}
-
-	s.logger.Info("started notification listener",
-		"json_channel", s.jsonPrefix,
-		"proto_channel", s.protoPrefix)
-
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
+			s.logger.Info("Stopping event processor due to context cancellation")
 			return
 		case <-s.stopCh:
+			s.logger.Info("Stopping event processor due to stop channel")
 			return
-		case <-ticker.C:
-			// Check for notifications
-			notification, err := listenConn.WaitForNotification(ctx)
-			if err != nil {
-				if pgconn.Timeout(err) {
-					continue
-				}
-				s.logger.Error("failed to wait for notification", err)
+		case event, ok := <-events:
+			if !ok {
+				s.logger.Info("Event channel closed, stopping processor")
 				return
 			}
-
-			// Handle notification based on channel
-			switch notification.Channel {
-			case s.protoPrefix:
-				s.handleProtoMessage(ctx, []byte(notification.Payload))
+			
+			// Process the event
+			s.logger.Debug("Received event from WAL", 
+				"id", event.Id,
+				"aggregate_type", event.AggregateType,
+				"event_type", event.EventType)
+			
+			// Convert to protobuf event
+			protoEvent := &pb.OutboxEvent{
+				Id:            event.Id,
+				AggregateType: event.AggregateType,
+				AggregateId:   event.AggregateId,
+				EventType:     event.EventType,
+				Payload:       event.Payload,
+				CreatedAt:     event.CreatedAt,
+				Metadata:      event.Metadata,
 			}
+			
+			// Handle the event
+			s.handleProtoEvent(s.ctx, protoEvent)
 		}
 	}
 }
 
-// handleProtoMessage handles a Protobuf message from the notification
-func (s *OutboxConsumer) handleProtoMessage(ctx context.Context, content []byte) {
-	event := &pb.OutboxEvent{}
-	if err := proto.Unmarshal(content, event); err != nil {
-		s.logger.Error("failed to unmarshal Protobuf event", err)
-		return
-	}
-
-	s.logger.Debug("received Protobuf event",
+// handleProtoEvent handles a Protobuf event
+func (s *OutboxConsumer) handleProtoEvent(ctx context.Context, event *pb.OutboxEvent) {
+	s.logger.Debug("Processing Protobuf event",
 		"id", event.Id,
 		"aggregate_type", event.AggregateType,
 		"event_type", event.EventType)
 
 	handler, ok := s.protoHandlers[event.AggregateType]
 	if !ok {
-		s.logger.Warn("no handler registered for aggregate type", "aggregate_type", event.AggregateType)
+		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.AggregateType)
 		return
 	}
 
 	if err := handler(ctx, event); err != nil {
-		s.logger.Error("failed to handle event",
+		s.logger.Error("Failed to handle event",
 			err,
 			"id", event.Id,
 			"aggregate_type", event.AggregateType,
 			"event_type", event.EventType)
 		return
 	}
+
+	s.logger.Debug("Successfully processed event", "id", event.Id)
 }
