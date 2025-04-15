@@ -359,7 +359,7 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte) 
 	if event.CreatedAt == 0 {
 		event.CreatedAt = time.Now().Unix()
 	}
-	w.logger.Info("Protobuf event received",
+	w.logger.Debug("Protobuf event received",
 		"id", event.Id,
 		"aggregate_type", event.AggregateType,
 		"aggregate_id", event.AggregateId,
@@ -367,7 +367,7 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte) 
 		"payload_size", len(event.Payload))
 	select {
 	case w.events <- event:
-		w.logger.Info("Protobuf event sent to channel", "id", event.Id)
+		w.logger.Debug("Protobuf event sent to channel", "id", event.Id)
 	case <-ctx.Done():
 		return
 	}

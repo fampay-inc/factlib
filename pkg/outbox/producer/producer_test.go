@@ -1,4 +1,4 @@
-package client
+package producer
 
 import (
 	"context"
@@ -153,8 +153,6 @@ func TestEmitEvent(t *testing.T) {
 	assert.Contains(t, err.Error(), "executor error")
 }
 
-
-
 // MockConnectionQuerier is a mock for ConnectionQuerier
 type MockConnectionQuerier struct {
 	mock.Mock
@@ -200,9 +198,8 @@ type mockPgxRow struct{}
 func (m *mockPgxRow) Scan(dest ...interface{}) error {
 	// Simulate scanning a PostgreSQL version
 	if len(dest) > 0 {
-		switch v := dest[0].(type) {
-		case *string:
-			*v = "PostgreSQL 14.0"
+		if s, ok := dest[0].(*string); ok {
+			*s = "PostgreSQL 14.0"
 		}
 	}
 	return nil

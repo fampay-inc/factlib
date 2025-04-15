@@ -6,19 +6,19 @@ This package implements the outbox pattern for reliable event publishing in dist
 
 The outbox pattern implementation consists of two main components:
 
-1. **Client**: Used by services to emit outbox events to PostgreSQL
-2. **Service**: Used by service owners to read outbox events and publish them to Kafka
+1. **Producer**: Used by services to emit outbox events to PostgreSQL
+2. **Consumer**: Used by service owners to read outbox events and publish them to Kafka
 
-## Client Usage
+## Producer Usage
 
-The client part allows services to emit outbox events into PostgreSQL using the WAL (Write-Ahead Log) mechanism. It supports both JSON and Protobuf serialization formats.
+The producer part allows services to emit outbox events into PostgreSQL using the WAL (Write-Ahead Log) mechanism. It supports Protobuf serialization format.
 
 ```go
 import (
     "context"
     "github.com/jackc/pgx/v5"
     "git.famapp.in/fampay-inc/factlib/pkg/logger"
-    "git.famapp.in/fampay-inc/factlib/pkg/outbox/client"
+    "git.famapp.in/fampay-inc/factlib/pkg/outbox/producer"
 )
 
 func main() {
@@ -33,15 +33,15 @@ func main() {
     }
     defer conn.Close(ctx)
     
-    // Create outbox client
-    outboxClient, err := client.NewPostgresAdapter(conn, log)
+    // Create outbox producer
+    outboxProducer, err := producer.NewPostgresAdapter(conn, log)
     if err != nil {
-        log.Error("failed to create outbox client", "error", err)
+        log.Error("failed to create outbox producer", "error", err)
         return
     }
     
     // Optionally set a custom prefix for logical decoding messages
-    outboxClient = outboxClient.WithPrefix("my_service_outbox")
+    outboxProducer = outboxProducer.WithPrefix("my_service_outbox")
     
     // Emit a JSON event
     payload := []byte(`{"key": "value"}`)
@@ -50,7 +50,7 @@ func main() {
         "version": "1.0.0",
     }
     
-    eventID, err := outboxClient.EmitEvent(
+    eventID, err := outboxProducer.EmitEvent(
         ctx,
         "user",             // aggregate type
         "123",              // aggregate ID
@@ -68,7 +68,7 @@ func main() {
     // Emit a Protobuf event (requires proto definition)
     protoPayload := []byte{} // serialized protobuf message
     
-    protoEventID, err := outboxClient.EmitProtoEvent(
+    protoEventID, err := outboxProducer.EmitEvent(
         ctx,
         "user",             // aggregate type
         "123",              // aggregate ID
@@ -85,9 +85,9 @@ func main() {
 }
 ```
 
-## Service Usage
+## Consumer Usage
 
-The service part reads outbox events from PostgreSQL WAL and publishes them to Kafka. Documentation for this component will be added as implementation progresses.
+The consumer part reads outbox events from PostgreSQL WAL and publishes them to Kafka. Documentation for this component will be added as implementation progresses.
 
 ## Architecture
 

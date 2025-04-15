@@ -1,4 +1,4 @@
-package client
+package producer
 
 import (
 	"context"
@@ -19,13 +19,13 @@ const (
 	defaultOutboxPrefix = "proto_outbox"
 )
 
-// OutboxClient defines the interface for emitting outbox events
-type OutboxClient interface {
+// OutboxProducer defines the interface for emitting outbox events
+type OutboxProducer interface {
 	// EmitEvent emits a Protobuf outbox event
 	EmitEvent(ctx context.Context, aggregateType, aggregateID, eventType string, payload []byte, metadata map[string]string) (string, error)
 
 	// WithPrefix sets a custom prefix for logical decoding messages
-	WithPrefix(prefix string) OutboxClient
+	WithPrefix(prefix string) OutboxProducer
 }
 
 // SQLExecutor defines an interface for executing SQL queries
@@ -33,7 +33,7 @@ type SQLExecutor interface {
 	ExecSQL(ctx context.Context, query string, args ...any) error
 }
 
-// PostgresAdapter is the implementation of OutboxClient that works with different PostgreSQL connection types
+// PostgresAdapter is the implementation of OutboxProducer that works with different PostgreSQL connection types
 type PostgresAdapter struct {
 	executor SQLExecutor
 	prefix   string
@@ -54,7 +54,7 @@ func NewPostgresAdapter(executor SQLExecutor, log *logger.Logger) (*PostgresAdap
 }
 
 // WithPrefix sets a custom prefix for logical decoding messages
-func (a *PostgresAdapter) WithPrefix(prefix string) OutboxClient {
+func (a *PostgresAdapter) WithPrefix(prefix string) OutboxProducer {
 	a.prefix = prefix
 	return a
 }

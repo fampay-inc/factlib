@@ -1,4 +1,4 @@
-package service
+package consumer
 
 import (
 	"context"
@@ -21,8 +21,8 @@ const (
 	defaultPollInterval = 100 * time.Millisecond
 )
 
-// OutboxService reads outbox events from PostgreSQL WAL and publishes them to handlers
-type OutboxService struct {
+// OutboxConsumer reads outbox events from PostgreSQL WAL and publishes them to handlers
+type OutboxConsumer struct {
 	conn            *pgx.Conn
 	jsonPrefix      string
 	protoPrefix     string
@@ -40,7 +40,7 @@ type EventHandler func(ctx context.Context, event *common.OutboxEvent) error
 // ProtoEventHandler handles Protobuf outbox events
 type ProtoEventHandler func(ctx context.Context, event *pb.OutboxEvent) error
 
-// Config represents the configuration for the OutboxService
+// Config represents the configuration for the OutboxConsumer
 type Config struct {
 	ConnectionString string
 	JsonPrefix       string
@@ -48,8 +48,8 @@ type Config struct {
 	PollInterval     time.Duration
 }
 
-// NewOutboxService creates a new OutboxService
-func NewOutboxService(ctx context.Context, cfg Config, log *logger.Logger) (*OutboxService, error) {
+// NewOutboxConsumer creates a new OutboxConsumer
+func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*OutboxConsumer, error) {
 	if cfg.ConnectionString == "" {
 		return nil, errors.New("connection string is required")
 	}
@@ -74,7 +74,7 @@ func NewOutboxService(ctx context.Context, cfg Config, log *logger.Logger) (*Out
 		pollInterval = defaultPollInterval
 	}
 
-	return &OutboxService{
+	return &OutboxConsumer{
 		conn:            conn,
 		jsonPrefix:      jsonPrefix,
 		protoPrefix:     protoPrefix,
@@ -87,17 +87,17 @@ func NewOutboxService(ctx context.Context, cfg Config, log *logger.Logger) (*Out
 }
 
 // RegisterHandler registers a handler for a specific aggregate type
-func (s *OutboxService) RegisterHandler(aggregateType string, handler EventHandler) {
+func (s *OutboxConsumer) RegisterHandler(aggregateType string, handler EventHandler) {
 	s.handlers[aggregateType] = handler
 }
 
 // RegisterProtoHandler registers a protobuf handler for a specific aggregate type
-func (s *OutboxService) RegisterProtoHandler(aggregateType string, handler ProtoEventHandler) {
+func (s *OutboxConsumer) RegisterProtoHandler(aggregateType string, handler ProtoEventHandler) {
 	s.protoHandlers[aggregateType] = handler
 }
 
-// Start starts the OutboxService
-func (s *OutboxService) Start(ctx context.Context) error {
+// Start starts the OutboxConsumer
+func (s *OutboxConsumer) Start(ctx context.Context) error {
 	// Start the notification listener
 	s.wg.Add(1)
 	go s.startListener(ctx)
@@ -105,15 +105,15 @@ func (s *OutboxService) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the OutboxService
-func (s *OutboxService) Stop() error {
+// Stop stops the OutboxConsumer
+func (s *OutboxConsumer) Stop() error {
 	close(s.stopCh)
 	s.wg.Wait()
 	return s.conn.Close(context.Background())
 }
 
 // startListener starts the notification listener for logical decoding messages
-func (s *OutboxService) startListener(ctx context.Context) {
+func (s *OutboxConsumer) startListener(ctx context.Context) {
 	defer s.wg.Done()
 
 	// Create a separate connection for listening to notifications
@@ -170,10 +170,8 @@ func (s *OutboxService) startListener(ctx context.Context) {
 	}
 }
 
-
-
 // handleProtoMessage handles a Protobuf message from the notification
-func (s *OutboxService) handleProtoMessage(ctx context.Context, content []byte) {
+func (s *OutboxConsumer) handleProtoMessage(ctx context.Context, content []byte) {
 	event := &pb.OutboxEvent{}
 	if err := proto.Unmarshal(content, event); err != nil {
 		s.logger.Error("failed to unmarshal Protobuf event", err)
@@ -199,9 +197,4 @@ func (s *OutboxService) handleProtoMessage(ctx context.Context, content []byte) 
 			"event_type", event.EventType)
 		return
 	}
-
-	s.logger.Debug("handled Protobuf event", 
-		"id", event.Id, 
-		"aggregate_type", event.AggregateType, 
-		"event_type", event.EventType)
 }

@@ -1,4 +1,4 @@
-package service
+package consumer
 
 import (
 	"context"
@@ -60,14 +60,14 @@ func (m *MockProtoEventHandler) Handle(ctx context.Context, event *pb.OutboxEven
 	return args.Error(0)
 }
 
-func TestNewOutboxService(t *testing.T) {
+func TestNewOutboxConsumer(t *testing.T) {
 	// This test would require a real database connection, so we'll skip it
 	t.Skip("Requires a real database connection")
 }
 
 func TestRegisterHandler(t *testing.T) {
-	// Create a new service
-	service := &OutboxService{
+	// Create a new consumer
+	consumer := &OutboxConsumer{
 		handlers:      make(map[string]EventHandler),
 		protoHandlers: make(map[string]ProtoEventHandler),
 	}
@@ -76,15 +76,15 @@ func TestRegisterHandler(t *testing.T) {
 	handler := func(ctx context.Context, event *common.OutboxEvent) error {
 		return nil
 	}
-	service.RegisterHandler("user", handler)
+	consumer.RegisterHandler("user", handler)
 
 	// Verify the handler was registered
-	assert.NotNil(t, service.handlers["user"])
+	assert.NotNil(t, consumer.handlers["user"])
 }
 
 func TestRegisterProtoHandler(t *testing.T) {
-	// Create a new service
-	service := &OutboxService{
+	// Create a new consumer
+	consumer := &OutboxConsumer{
 		handlers:      make(map[string]EventHandler),
 		protoHandlers: make(map[string]ProtoEventHandler),
 	}
@@ -93,18 +93,18 @@ func TestRegisterProtoHandler(t *testing.T) {
 	handler := func(ctx context.Context, event *pb.OutboxEvent) error {
 		return nil
 	}
-	service.RegisterProtoHandler("user", handler)
+	consumer.RegisterProtoHandler("user", handler)
 
 	// Verify the handler was registered
-	assert.NotNil(t, service.protoHandlers["user"])
+	assert.NotNil(t, consumer.protoHandlers["user"])
 }
 
 // JSON handling has been removed as part of the refactoring
 
 func TestHandleProtoMessage(t *testing.T) {
-	// Create a new service
+	// Create a new consumer
 	log := &logger.Logger{}
-	service := &OutboxService{
+	consumer := &OutboxConsumer{
 		logger:        log,
 		protoHandlers: make(map[string]ProtoEventHandler),
 	}
@@ -129,11 +129,11 @@ func TestHandleProtoMessage(t *testing.T) {
 			e.EventType == event.EventType
 	})).Return(nil)
 	
-	service.protoHandlers["user"] = mockHandler.Handle
+	consumer.protoHandlers["user"] = mockHandler.Handle
 
 	// Handle the message
 	eventProto, _ := proto.Marshal(event)
-	service.handleProtoMessage(context.Background(), eventProto)
+	consumer.handleProtoMessage(context.Background(), eventProto)
 
 	// Verify the handler was called
 	mockHandler.AssertExpectations(t)
