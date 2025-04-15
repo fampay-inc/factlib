@@ -265,7 +265,6 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 			} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				w.logger.Error("failed to receive message", err, "error", err.Error())
 			}
-			time.Sleep(1 * time.Second)
 			continue
 		}
 
@@ -282,14 +281,13 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 					continue
 				}
 
-				w.logger.Debug("received primary keepalive message",
-					"server_wal_end", pkm.ServerWALEnd.String(),
-					"server_time", pkm.ServerTime,
-					"reply_requested", pkm.ReplyRequested)
+				// w.logger.Debug("received primary keepalive message",
+				// 	"server_wal_end", pkm.ServerWALEnd.String(),
+				// 	"server_time", pkm.ServerTime,
+				// 	"reply_requested", pkm.ReplyRequested)
 
-				// If the primary requests a reply, send one immediately
 				if pkm.ReplyRequested {
-					w.logger.Debug("primary requested reply, sending standby status update")
+					// w.logger.Debug("primary requested reply, sending standby status update")
 					err = pglogrepl.SendStandbyStatusUpdate(ctx, w.replConn, pglogrepl.StandbyStatusUpdate{
 						WALWritePosition: xLogPos,
 					})
@@ -312,7 +310,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				// Update our position in the WAL
 				// Make sure to update the position before processing the message
 				newPos := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
-				w.logger.Debug("updating WAL position", "old_pos", xLogPos.String(), "new_pos", newPos.String(), "server_end", xld.ServerWALEnd.String())
+				// w.logger.Debug("updating WAL position", "old_pos", xLogPos.String(), "new_pos", newPos.String(), "server_end", xld.ServerWALEnd.String())
 				xLogPos = newPos
 
 				// Send a status update immediately after receiving data to acknowledge it
@@ -342,7 +340,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				w.processLogicalMessage(ctx, logicalMsg)
 			}
 		default:
-			w.logger.Debug("received unexpected message type", "type", fmt.Sprintf("%T", rawMsg))
+			// w.logger.Debug("received unexpected message type", "type", fmt.Sprintf("%T", rawMsg))
 		}
 	}
 }
