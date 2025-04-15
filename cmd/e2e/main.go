@@ -80,7 +80,7 @@ func OutboxService(ctx context.Context) error {
 
 	// Set up Kafka with exactly-once semantics
 	kafkaConfig := consumer.KafkaConfig{
-		BootstrapServers: []string{"localhost:9092"}, // Use localhost instead of container name
+		BootstrapServers: []string{"127.0.0.1:9092"}, // Use localhost instead of container name
 		ClientID:         "outbox-service",
 		RequiredAcks:     -1, // All ISR acks
 	}
@@ -129,17 +129,17 @@ func OutboxService(ctx context.Context) error {
 		}
 
 		// Publish to Kafka
-		log.Debug("Attempting to produce message to Kafka", 
-			"topic", "user-events", 
+		log.Debug("Attempting to produce message to Kafka",
+			"topic", "user-events",
 			"key", string(key),
 			"bootstrap_servers", kafkaConfig.BootstrapServers)
-		
+
 		err = kafkaAdapter.Produce(ctx, "user-events", key, value, headers)
 		if err != nil {
 			log.Error("Failed to produce message to Kafka", err, "event_id", event.Id)
 			return err
 		}
-		
+
 		log.Info("Successfully produced message to Kafka", "event_id", event.Id, "topic", "user-events")
 		return nil
 	})

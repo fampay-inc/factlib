@@ -1,70 +1,60 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:15
-    container_name: factlib-postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: outbox_example
-    ports:
-      - "6432:5432"
-    volumes:
-      - ./scripts/init-postgres.sh:/docker-entrypoint-initdb.d/init-postgres.sh
-    command:
-      - "postgres"
-      - "-c"
-      - "wal_level=logical"
-      - "-c"
-      - "max_replication_slots=10"
-      - "-c"
-      - "max_wal_senders=10"
-      - "-c"
-      - "log_statement=all"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    postgres:
+        image: postgres:15
+        container_name: factlib-postgres
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: outbox_example
+        ports:
+            - "6432:5432"
+        volumes:
+            - ./scripts/init-postgres.sh:/docker-entrypoint-initdb.d/init-postgres.sh
+        command:
+            - "postgres"
+            - "-c"
+            - "wal_level=logical"
+            - "-c"
+            - "max_replication_slots=10"
+            - "-c"
+            - "max_wal_senders=10"
+            - "-c"
+            - "log_statement=all"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
 
-  redpanda:
-    image: redpandadata/redpanda:latest
-    container_name: factlib-redpanda
-    command:
-      - redpanda
-      - start
-      - --smp=1
-      - --memory=1G
-      - --reserve-memory=0M
-      - --overprovisioned
-      - --node-id=0
-      - --check=false
-      - --pandaproxy-addr=0.0.0.0:8082
-      - --advertise-pandaproxy-addr=redpanda:8082
-      - --kafka-addr=0.0.0.0:9092
-      - --advertise-kafka-addr=redpanda:9092
-      - --rpc-addr=0.0.0.0:33145
-      - --advertise-rpc-addr=redpanda:33145
-    ports:
-      - "9092:9092"
-      - "8082:8082"
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redpanda-console:
-    image: redpandadata/console:latest
-    container_name: factlib-redpanda-console
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-
+    broker:
+        image: confluentinc/cp-kafka:7.6.0
+        ports:
+            - "9092:9092"
+            - "9101:9101"
+        environment:
+            KAFKA_NODE_ID: 1
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+            KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092"
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_JMX_PORT: 9101
+            KAFKA_JMX_HOSTNAME: localhost
+            KAFKA_PROCESS_ROLES: "broker,controller"
+            KAFKA_CONTROLLER_QUORUM_VOTERS: "1@broker:29093"
+            KAFKA_LISTENERS: "PLAINTEXT://broker:29092,CONTROLLER://broker:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+            KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+            KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+            KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+            # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
+            # See https://docs.confluent.io/kafka/operations-tools/kafka-tools.html#kafka-storage-sh
+            CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    console:
+        image: redpandadata/console:latest
+        environment:
+            KAFKA_BROKERS: broker:29092
+        ports:
+            - "8080:8080"
 volumes:
-  postgres-data:
+    postgres-data:

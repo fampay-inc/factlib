@@ -36,8 +36,8 @@ type ProtoEventHandler func(ctx context.Context, event *pb.OutboxEvent) error
 
 // Config represents the configuration for the OutboxConsumer
 type Config struct {
-	ConnectionString  string
-	ProtoPrefix       string
+	ConnectionString    string
+	ProtoPrefix         string
 	ReplicationSlotName string
 	PublicationName     string
 }
@@ -120,13 +120,13 @@ func (s *OutboxConsumer) Start(ctx context.Context) error {
 func (s *OutboxConsumer) Stop() error {
 	// Cancel the context to signal all goroutines to stop
 	s.cancel()
-	
+
 	// Close the stop channel for backward compatibility
 	close(s.stopCh)
-	
+
 	// Wait for all goroutines to finish
 	s.wg.Wait()
-	
+
 	// Close the WAL subscriber
 	return s.walSubscriber.Close()
 }
@@ -148,13 +148,13 @@ func (s *OutboxConsumer) processEvents(events <-chan *common.OutboxEvent) {
 				s.logger.Info("Event channel closed, stopping processor")
 				return
 			}
-			
+
 			// Process the event
-			s.logger.Debug("Received event from WAL", 
+			s.logger.Debug("Received event from WAL",
 				"id", event.Id,
 				"aggregate_type", event.AggregateType,
 				"event_type", event.EventType)
-			
+
 			// Convert to protobuf event
 			protoEvent := &pb.OutboxEvent{
 				Id:            event.Id,
@@ -165,7 +165,7 @@ func (s *OutboxConsumer) processEvents(events <-chan *common.OutboxEvent) {
 				CreatedAt:     event.CreatedAt,
 				Metadata:      event.Metadata,
 			}
-			
+
 			// Handle the event
 			s.handleProtoEvent(s.ctx, protoEvent)
 		}
@@ -200,79 +200,60 @@ func (s *OutboxConsumer) handleProtoEvent(ctx context.Context, event *pb.OutboxE
 // processEvent processes an event from the WAL subscriber
 func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxEvent) error {
 	s.logger.Debug("Processing Protobuf event",
-		"id", event.ID,
+		"id", event.Id,
 		"aggregate_type", event.AggregateType,
 		"event_type", event.EventType)
 
 	// Log the event details
 	s.logger.Info("Processing user event",
-		"id", event.ID,
-		"aggregate_id", event.AggregateID,
+		"id", event.Id,
+		"aggregate_id", event.AggregateId,
 		"event_type", event.EventType,
 		"payload_size", len(event.Payload))
 
-	// Marshal the event to protobuf
-	pb := &outboxpb.OutboxEvent{
-		Id:           event.ID,
-		AggregateType: event.AggregateType,
-		AggregateId:   event.AggregateID,
-		EventType:     event.EventType,
-		Payload:       event.Payload,
-		Timestamp:     timestamppb.New(event.Timestamp),
-		Metadata:      event.Metadata,
-	}
-
-	// Serialize the protobuf message
-	value, err := proto.Marshal(pb)
-	if err != nil {
-		return errors.Wrap(err, "failed to marshal event")
-	}
-
-	s.logger.Debug("Marshaled event to protobuf",
-		"event_id", event.ID,
-		"value_size", len(value))
-
 	// Determine the topic name based on the aggregate type
-	// This is a simple example, you might want to use a more sophisticated mapping
-	topic := fmt.Sprintf("%s-events", event.AggregateType)
+	topic := event.AggregateType + "-events"
 
-	// Set up headers
-	headers := map[string]string{
-		"event_type": event.EventType,
-		"event_id":   event.ID,
-	}
+	// We'll let the handler deal with headers if needed
 
 	// Log the Kafka producer details
 	s.logger.Debug("Attempting to produce message to Kafka",
-		"bootstrap_servers", s.kafkaProducer.GetBootstrapServers(),
 		"topic", topic,
-		"key", event.AggregateID)
+		"key", event.AggregateId)
 
 	// Implement retry logic for Kafka production
 	const maxRetries = 3
 	retryDelay := 500 * time.Millisecond
 
+	// Get the Kafka producer from the handler
+	handler, ok := s.protoHandlers[event.AggregateType]
+	if !ok {
+		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.AggregateType)
+		return errors.Errorf("no handler registered for aggregate type %s", event.AggregateType)
+	}
+
+	// Process the event using the registered handler
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
 		// Create a context with timeout for each attempt
-		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		// Produce the message to Kafka
-		err = s.kafkaProducer.Produce(attemptCtx, topic, []byte(event.AggregateID), value, headers)
+		// Process the event using the handler
+		err := handler(attemptCtx, event)
 		if err == nil {
 			// Success!
-			s.logger.Info("Successfully produced message to Kafka",
-				"event_id", event.ID,
+			s.logger.Info("Successfully processed event",
+				"event_id", event.Id,
 				"topic", topic,
 				"attempt", i+1)
 			return nil
 		}
 
 		lastErr = err
-		s.logger.Warn("Failed to produce message to Kafka, retrying",
+		s.logger.Warn("Failed to process event, retrying",
 			"error", err.Error(),
-			"event_id", event.ID,
+			"event_id", event.Id,
 			"attempt", i+1,
 			"max_retries", maxRetries)
 
@@ -286,10 +267,10 @@ func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxE
 		}
 	}
 
-	s.logger.Error("Failed to produce message to Kafka after retries",
+	s.logger.Error("Failed to process event after retries",
 		lastErr,
-		"event_id", event.ID,
+		"event_id", event.Id,
 		"retries", maxRetries)
 
-	return errors.Wrap(lastErr, "failed to produce message after retries")
+	return errors.Wrap(lastErr, "failed to process event after retries")
 }

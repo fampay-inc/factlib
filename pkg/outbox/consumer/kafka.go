@@ -47,33 +47,14 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		cfg.RequiredAcks = -1 // -1 means all brokers must acknowledge
 	}
 
-	log.Info("Creating Kafka client", 
-		"bootstrap_servers", cfg.BootstrapServers, 
+	log.Info("Creating Kafka client",
+		"bootstrap_servers", cfg.BootstrapServers[0],
 		"client_id", cfg.ClientID,
 		"required_acks", cfg.RequiredAcks)
-
-	// Convert required acks to the appropriate constant
-	var requiredAcks kgo.Acks
-	switch cfg.RequiredAcks {
-	case -1:
-		requiredAcks = kgo.AllISRAcks()
-	case 0:
-		requiredAcks = kgo.NoAck()
-	case 1:
-		requiredAcks = kgo.LeaderAck()
-	default:
-		requiredAcks = kgo.AllISRAcks() // Default to all ISR acks
-	}
-
-	// Add connection timeout to avoid hanging indefinitely
-	connectTimeout := 10 * time.Second
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.BootstrapServers...),
 		kgo.ClientID(cfg.ClientID),
-		kgo.RequiredAcks(requiredAcks),
-		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
-		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)), // nil uses the default hasher
 		// Use default timeouts since RequestTimeout is not available in this version
 	}
 
@@ -84,23 +65,23 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 	}
 
 	// Validate connection by pinging the brokers
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
+	ctx := context.Background()
 
 	log.Debug("Validating Kafka connection")
 	// The first produce will fail if connection is invalid
 	// We'll use a ping record to test the connection
 	pingRecord := &kgo.Record{
-		Topic: "__ping", // This topic doesn't need to exist
+		Topic: "ping", // This topic doesn't need to exist
 		Value: []byte("ping"),
 	}
 
 	// Try to produce a ping message to validate connection
 	// This will fail, but that's expected - we just want to ensure we can connect
-	_ = client.ProduceSync(ctx, pingRecord)
+	out := client.ProduceSync(ctx, pingRecord)
+	log.Info("ping record", "out", out.FirstErr().Error())
 
 	// Log connection status
-	log.Info("Kafka client initialized", "bootstrap_servers", cfg.BootstrapServers)
+	log.Info("Kafka client initialized", "bootstrap_servers", cfg.BootstrapServers[0])
 	log.Info("Successfully connected to Kafka")
 
 	return &KafkaAdapter{
@@ -164,7 +145,6 @@ func (a *KafkaAdapter) Close() error {
 	a.client.Close()
 	return nil
 }
-
 
 // KafkaProtoEventHandler creates an event handler that publishes protobuf events to Kafka
 func KafkaProtoEventHandler(producer KafkaProducer, topic string) ProtoEventHandler {
