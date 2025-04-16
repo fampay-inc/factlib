@@ -105,7 +105,7 @@ func OutboxService(ctx context.Context) error {
 
 	// Register handler for user events
 	outboxConsumer.RegisterHandler(cfg.OutboxPrefix, consumer.KafkaEventHandler(kafkaAdapter))
-
+	outboxConsumer.RegiserHandlerAck(kafkaAdapter.Acks)
 	// Start the consumer
 	if err := outboxConsumer.Start(ctx); err != nil {
 		return err

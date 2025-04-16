@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
@@ -14,10 +13,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const AckPosKey = "LSN"
+
 // KafkaProducer defines the interface for Kafka producers
 type KafkaProducer interface {
 	// Produce produces a message to a Kafka topic
 	Produce(ctx context.Context, topic string, key []byte, value []byte, headers map[string]string) error
+
+	// Send Ack here that broker recevied the msg
+	Ack(pos string)
 	// Close closes the producer
 	Close() error
 }
@@ -25,6 +29,7 @@ type KafkaProducer interface {
 // KafkaAdapter implements the KafkaProducer interface
 type KafkaAdapter struct {
 	client *kgo.Client
+	Acks   chan *string
 	logger *logger.Logger
 }
 
@@ -100,6 +105,7 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 
 	return &KafkaAdapter{
 		client: client,
+		Acks:   make(chan *string, 10),
 		logger: log,
 	}, nil
 }
@@ -125,21 +131,29 @@ func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, va
 	}
 	// Produce record with timeout
 	bCtx := context.Background()
-	wg := sync.WaitGroup{}
-	wg.Add(1)
 	a.client.Produce(bCtx, record, func(r *kgo.Record, err error) {
 		if err != nil {
 			a.logger.Error("Failed to produce message to Kafka",
 				err,
 				"topic", topic,
 				"key", string(record.Key))
+			return
 		}
-		wg.Done()
-		a.logger.Debug("kafka:success", "topic", topic, "key", string(key))
+		var pos string
+		for _, rh := range r.Headers {
+			if rh.Key == AckPosKey {
+				pos = string(rh.Value)
+				a.Ack(pos)
+			}
+		}
+		a.logger.Debug("kafka:success", "topic", topic, "key", string(key), "pos", pos)
 	})
-	wg.Wait()
-	a.client.Flush(ctx)
 	return nil
+}
+
+func (a *KafkaAdapter) Ack(pos string) {
+	a.logger.Debug("kafka:ack", "pos", pos)
+	a.Acks <- &pos
 }
 
 // Close closes the producer
@@ -169,6 +183,7 @@ func KafkaEventHandler(producer KafkaProducer) EventHandler {
 		headers := map[string]string{
 			"event_id":   event.Outbox.Id,
 			"event_type": event.Outbox.EventType,
+			"LSN":        event.XLogPos.String(),
 		}
 
 		topic := fmt.Sprintf("%s.%s", event.OutboxPrefix, event.Outbox.AggregateType)

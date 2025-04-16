@@ -46,7 +46,7 @@ type WALSubscriber struct {
 	ConsumerHealth ConsumerHealth
 
 	xLogPos    pglogrepl.LSN
-	ackXLogPos chan *pglogrepl.LSN
+	AckXLogPos chan *pglogrepl.LSN
 
 	WalStandyStatusUpdateCounter func(context.Context, string, string)
 	ReplicaLagMetricFunc         func(context.Context, int64)
@@ -79,7 +79,7 @@ func NewWALSubscriber(ctx context.Context, cfg WALConfig, log *logger.Logger) (*
 		queryConn:  queryConn,
 		logger:     log,
 		events:     make(chan *Event, 1000),
-		ackXLogPos: make(chan *pglogrepl.LSN, 10),
+		AckXLogPos: make(chan *pglogrepl.LSN, 10),
 	}, nil
 }
 
@@ -370,7 +370,7 @@ func (w *WALSubscriber) listenEventAck(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ackPos := <-w.ackXLogPos:
+		case ackPos := <-w.AckXLogPos:
 			w.logger.Debug("ack", "xLogPos", ackPos.String())
 			w.xLogPos = *ackPos
 		case <-ticker.C:

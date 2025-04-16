@@ -7,6 +7,7 @@ import (
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
+	"github.com/jackc/pglogrepl"
 	"github.com/pkg/errors"
 )
 
@@ -19,6 +20,7 @@ type OutboxConsumer struct {
 	walSubscriber *postgres.WALSubscriber
 	logger        *logger.Logger
 	Handlers      map[string]EventHandler
+	handlerAcks   chan *string
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	ctx           context.Context
@@ -89,6 +91,10 @@ func (s *OutboxConsumer) RegisterHandler(aggregateType string, handler EventHand
 	s.Handlers[aggregateType] = handler
 }
 
+func (s *OutboxConsumer) RegiserHandlerAck(hAck chan *string) {
+	s.handlerAcks = hAck
+}
+
 // Start starts the OutboxConsumer
 func (s *OutboxConsumer) Start(ctx context.Context) error {
 	// Subscribe to WAL events
@@ -100,6 +106,7 @@ func (s *OutboxConsumer) Start(ctx context.Context) error {
 	// Start the event processor
 	s.wg.Add(1)
 	go s.processEvents(events)
+	go s.syncAck(ctx)
 
 	return nil
 }
@@ -168,41 +175,60 @@ func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event)
 	}
 
 	s.logger.Debug("Successfully processed event", "id", event.Outbox.Id)
-	// const maxRetries = 3
-	// retryDelay := 500 * time.Millisecond
-
-	// // Process the event using the registered handler
-	// var lastErr error
-	// for i := 0; i < maxRetries; i++ {
-	// 	// Create a context with timeout for each attempt
-	// 	attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	// 	defer cancel()
-
-	// 	// Process the event using the handler
-	// 	err := handler(attemptCtx, event)
-	// 	if err == nil {
-	// 		// Success!
-	// 		s.logger.Info("Successfully processed event",
-	// 			"event_id", event.Outbox.Id,
-	// 			"topic", topic,
-	// 			"attempt", i+1)
-	// 		return nil
-	// 	}
-
-	// 	lastErr = err
-	// 	s.logger.Warn("Failed to process event, retrying",
-	// 		"error", err.Error(),
-	// 		"event_id", event.Outbox.Id,
-	// 		"attempt", i+1,
-	// 		"max_retries", maxRetries)
-
-	// 	// Wait before retrying, but respect context cancellation
-	// 	select {
-	// 	case <-ctx.Done():
-	// 		return errors.Wrap(ctx.Err(), "context cancelled during retry")
-	// 	case <-time.After(retryDelay):
-	// 		// Exponential backoff
-	// 		retryDelay *= 2
-	// 	}
-	// }
 }
+
+func (s *OutboxConsumer) syncAck(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ackPos := <-s.handlerAcks:
+			if ackPos == nil {
+				continue
+			}
+			lsn, err := pglogrepl.ParseLSN(*ackPos)
+			if err != nil {
+				s.logger.Fatal("Invalid LSN", err, "lsn", ackPos)
+			}
+			s.walSubscriber.AckXLogPos <- &lsn
+		}
+	}
+}
+
+// const maxRetries = 3
+// retryDelay := 500 * time.Millisecond
+
+// // Process the event using the registered handler
+// var lastErr error
+// for i := 0; i < maxRetries; i++ {
+// 	// Create a context with timeout for each attempt
+// 	attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// 	defer cancel()
+
+// 	// Process the event using the handler
+// 	err := handler(attemptCtx, event)
+// 	if err == nil {
+// 		// Success!
+// 		s.logger.Info("Successfully processed event",
+// 			"event_id", event.Outbox.Id,
+// 			"topic", topic,
+// 			"attempt", i+1)
+// 		return nil
+// 	}
+
+// 	lastErr = err
+// 	s.logger.Warn("Failed to process event, retrying",
+// 		"error", err.Error(),
+// 		"event_id", event.Outbox.Id,
+// 		"attempt", i+1,
+// 		"max_retries", maxRetries)
+
+// 	// Wait before retrying, but respect context cancellation
+// 	select {
+// 	case <-ctx.Done():
+// 		return errors.Wrap(ctx.Err(), "context cancelled during retry")
+// 	case <-time.After(retryDelay):
+// 		// Exponential backoff
+// 		retryDelay *= 2
+// 	}
+// }
