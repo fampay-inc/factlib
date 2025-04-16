@@ -211,15 +211,15 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 		return
 	}
 
-	xLogPos := identifyResult.XLogPos
+	w.xLogPos = identifyResult.XLogPos
 
 	w.logger.Info("identified system",
 		"systemID", identifyResult.SystemID,
 		"timeline", identifyResult.Timeline,
-		"xLogPos", xLogPos.String())
+		"xLogPos", w.xLogPos.String())
 
 	// Start logical replication using the pglogrepl library
-	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, xLogPos, pglogrepl.StartReplicationOptions{
+	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, w.xLogPos, pglogrepl.StartReplicationOptions{
 		PluginArgs: []string{
 			"proto_version '1'",
 			fmt.Sprintf("publication_names '%s'", w.cfg.PublicationName),
@@ -230,7 +230,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	w.logger.Debug("started replication with options",
 		"slot", w.cfg.ReplicationSlotName,
 		"publication", w.cfg.PublicationName,
-		"position", xLogPos.String())
+		"position", w.xLogPos.String())
 
 	if err != nil {
 		w.logger.Error("failed to start replication", err, "error", err.Error())
@@ -250,11 +250,11 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 
 		// Send standby status updates to the server
 		if time.Now().After(nextStandbyMessageDeadline) {
-			w.logger.Debug("sending standby status update", "position", xLogPos.String())
+			w.logger.Debug("sending standby status update", "position", w.xLogPos.String())
 			err = pglogrepl.SendStandbyStatusUpdate(ctx, w.replConn, pglogrepl.StandbyStatusUpdate{
-				WALWritePosition: xLogPos,
-				WALFlushPosition: xLogPos,
-				WALApplyPosition: xLogPos,
+				WALWritePosition: w.xLogPos,
+				WALFlushPosition: w.xLogPos,
+				WALApplyPosition: w.xLogPos,
 				ClientTime:       time.Now(),
 			})
 			if err != nil {
@@ -303,7 +303,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				if pkm.ReplyRequested {
 					// w.logger.Debug("primary requested reply, sending standby status update")
 					err = pglogrepl.SendStandbyStatusUpdate(ctx, w.replConn, pglogrepl.StandbyStatusUpdate{
-						WALWritePosition: xLogPos,
+						WALWritePosition: w.xLogPos,
 					})
 					if err != nil {
 						w.logger.Error("failed to send standby status update", err, "error", err.Error())
