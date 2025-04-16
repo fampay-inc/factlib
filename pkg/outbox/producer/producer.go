@@ -66,11 +66,11 @@ func (a *PostgresAdapter) EmitEvent(ctx context.Context, aggregateType, aggregat
 		return "", errors.New("event type is required")
 	}
 
-	eventID := uuid.New().String()
+	eventID, _ := uuid.NewV7()
 	createdAt := time.Now().UTC().UnixNano()
 
 	event := &pb.OutboxEvent{
-		Id:            eventID,
+		Id:            eventID.String(),
 		AggregateType: aggregateType,
 		AggregateId:   aggregateID,
 		EventType:     eventType,
@@ -83,20 +83,19 @@ func (a *PostgresAdapter) EmitEvent(ctx context.Context, aggregateType, aggregat
 	if err != nil {
 		return "", errors.Wrap(err, "failed to marshal proto event")
 	}
-	a.logger.Debug("proto bytes", "proto", protoBytes)
 	sqlQuery := "SELECT pg_logical_emit_message(true, $1, $2::bytea)"
 	err = a.executor.Exec(ctx, sqlQuery, a.prefix, protoBytes)
 
 	if err != nil {
 		return "", errors.Wrap(err, "failed to emit logical message")
 	}
-
-	a.logger.Debug("emitted proto logical message",
+	a.logger.Debug("emitted message",
 		"id", eventID,
+		"aggregate_id", aggregateID,
 		"aggregate_type", aggregateType,
 		"event_type", eventType)
 
-	return eventID, nil
+	return event.Id, nil
 }
 
 // ValidateConnection validates the PostgreSQL connection and ensures the required extensions are available

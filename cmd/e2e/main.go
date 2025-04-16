@@ -153,8 +153,8 @@ func createUserWithEvents(ctx context.Context, pgConn *pgx.Conn, userData []byte
 	id, _ := uuid.NewV7() // aggregate ID (would typically be the actual user ID)
 	eventID, err := outboxProducer.EmitEvent(
 		ctx,
-		"user", // aggregate type
-		id.String(),
+		"user",         // aggregate type
+		id.String(),    // aggregate ID
 		"user.created", // event type
 		userData,       // event payload
 		metadata,       // event metadata

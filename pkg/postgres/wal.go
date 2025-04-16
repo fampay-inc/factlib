@@ -73,12 +73,13 @@ func NewWALSubscriber(ctx context.Context, cfg WALConfig, log *logger.Logger) (*
 	}
 
 	return &WALSubscriber{
-		cfg:       cfg,
-		ctx:       ctx,
-		replConn:  replConn,
-		queryConn: queryConn,
-		logger:    log,
-		events:    make(chan *Event, 1000),
+		cfg:        cfg,
+		ctx:        ctx,
+		replConn:   replConn,
+		queryConn:  queryConn,
+		logger:     log,
+		events:     make(chan *Event, 1000),
+		ackXLogPos: make(chan *pglogrepl.LSN, 10),
 	}, nil
 }
 
@@ -261,6 +262,8 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	standbyMessageTimeout := time.Second * 5
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
+	go w.listenEventAck(ctx)
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -356,6 +359,23 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 			}
 		default:
 			// w.logger.Debug("received unexpected message type", "type", fmt.Sprintf("%T", rawMsg))
+		}
+	}
+}
+
+func (w *WALSubscriber) listenEventAck(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ackPos := <-w.ackXLogPos:
+			w.logger.Debug("ack", "xLogPos", ackPos.String())
+			w.xLogPos = *ackPos
+		case <-ticker.C:
+			w.logger.Debug("ticked", "xLogPos", w.xLogPos.String())
+			w.SendStandbyStatusUpdate()
 		}
 	}
 }

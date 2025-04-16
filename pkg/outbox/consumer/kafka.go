@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
@@ -105,12 +106,7 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 
 // Produce produces a message to a Kafka topic
 func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, value []byte, headers map[string]string) error {
-	a.logger.Debug("Producing message to Kafka",
-		"topic", topic,
-		"key", string(key),
-		"value_size", len(value),
-		"headers_count", len(headers))
-
+	a.logger.Debug("kafka:produce message", "topic", topic, "key", string(key))
 	// Convert headers to kgo.RecordHeader format
 	kafkaHeaders := []kgo.RecordHeader{}
 	for k, v := range headers {
@@ -127,28 +123,22 @@ func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, va
 		Value:   value,
 		Headers: kafkaHeaders,
 	}
-
-	// Use a timeout for the produce operation
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	// Produce record with timeout
-	result := a.client.ProduceSync(timeoutCtx, record)
-	err := result.FirstErr()
-	if err != nil {
-		a.logger.Error("Failed to produce message to Kafka",
-			err,
-			"topic", topic,
-			"key", string(key))
-		return errors.Wrap(err, "failed to produce message")
-	}
-
-	// Log success without partition/offset info (not available in this version of franz-go)
-
-	a.logger.Info("Message successfully produced to Kafka",
-		"topic", topic,
-		"key", string(key))
-
+	bCtx := context.Background()
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	a.client.Produce(bCtx, record, func(r *kgo.Record, err error) {
+		if err != nil {
+			a.logger.Error("Failed to produce message to Kafka",
+				err,
+				"topic", topic,
+				"key", string(record.Key))
+		}
+		wg.Done()
+		a.logger.Debug("kafka:success", "topic", topic, "key", string(key))
+	})
+	wg.Wait()
+	a.client.Flush(ctx)
 	return nil
 }
 
@@ -177,10 +167,8 @@ func KafkaEventHandler(producer KafkaProducer) EventHandler {
 
 		// Create headers
 		headers := map[string]string{
-			"aggregate_type": event.Outbox.AggregateType,
-			"event_type":     event.Outbox.EventType,
-			"created_at":     time.Unix(0, event.Outbox.CreatedAt).String(),
-			"content_type":   "application/protobuf",
+			"event_id":   event.Outbox.Id,
+			"event_type": event.Outbox.EventType,
 		}
 
 		topic := fmt.Sprintf("%s.%s", event.OutboxPrefix, event.Outbox.AggregateType)
@@ -190,7 +178,7 @@ func KafkaEventHandler(producer KafkaProducer) EventHandler {
 		if err := producer.Produce(ctx, topic, key, value, headers); err != nil {
 			return errors.Wrap(err, "failed to produce message")
 		}
-		log.Info("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic)
+		log.Debug("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic, "key", string(key))
 		return nil
 	}
 }

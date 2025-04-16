@@ -149,8 +149,8 @@ func (s *OutboxConsumer) processEvents(events <-chan *postgres.Event) {
 
 // handleEvent handles a Protobuf event
 func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event) {
-	s.logger.Debug("Processing event",
-		"id", event.XLogPos)
+	s.logger.Debug("handle event", "id", event.Outbox.Id,
+		"xLogPos", event.XLogPos.String())
 
 	handler, ok := s.Handlers[event.OutboxPrefix]
 	if !ok {
@@ -168,72 +168,41 @@ func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event)
 	}
 
 	s.logger.Debug("Successfully processed event", "id", event.Outbox.Id)
-}
+	// const maxRetries = 3
+	// retryDelay := 500 * time.Millisecond
 
-// processEvent processes an event from the WAL subscriber
-func (s *OutboxConsumer) processEvent(ctx context.Context, event *postgres.Event) error {
-	s.logger.Debug("Processing event",
-		"id", event.Outbox.Id,
-		"aggregate_type", event.Outbox.AggregateType,
-		"event_type", event.Outbox.EventType)
+	// // Process the event using the registered handler
+	// var lastErr error
+	// for i := 0; i < maxRetries; i++ {
+	// 	// Create a context with timeout for each attempt
+	// 	attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// 	defer cancel()
 
-	// Determine the topic name based on the aggregate type
-	topic := event.Outbox.AggregateType + "-events"
-	// Log the Kafka producer details
-	s.logger.Debug("Attempting to produce message to Kafka",
-		"topic", topic,
-		"key", event.Outbox.AggregateId)
+	// 	// Process the event using the handler
+	// 	err := handler(attemptCtx, event)
+	// 	if err == nil {
+	// 		// Success!
+	// 		s.logger.Info("Successfully processed event",
+	// 			"event_id", event.Outbox.Id,
+	// 			"topic", topic,
+	// 			"attempt", i+1)
+	// 		return nil
+	// 	}
 
-	// Implement retry logic for Kafka production
-	const maxRetries = 3
-	retryDelay := 500 * time.Millisecond
+	// 	lastErr = err
+	// 	s.logger.Warn("Failed to process event, retrying",
+	// 		"error", err.Error(),
+	// 		"event_id", event.Outbox.Id,
+	// 		"attempt", i+1,
+	// 		"max_retries", maxRetries)
 
-	// Get the Kafka producer from the handler
-	handler, ok := s.Handlers[event.OutboxPrefix]
-	if !ok {
-		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.OutboxPrefix)
-		return errors.Errorf("no handler registered for aggregate type %s", event.OutboxPrefix)
-	}
-
-	// Process the event using the registered handler
-	var lastErr error
-	for i := 0; i < maxRetries; i++ {
-		// Create a context with timeout for each attempt
-		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-
-		// Process the event using the handler
-		err := handler(attemptCtx, event)
-		if err == nil {
-			// Success!
-			s.logger.Info("Successfully processed event",
-				"event_id", event.Outbox.Id,
-				"topic", topic,
-				"attempt", i+1)
-			return nil
-		}
-
-		lastErr = err
-		s.logger.Warn("Failed to process event, retrying",
-			"error", err.Error(),
-			"event_id", event.Outbox.Id,
-			"attempt", i+1,
-			"max_retries", maxRetries)
-
-		// Wait before retrying, but respect context cancellation
-		select {
-		case <-ctx.Done():
-			return errors.Wrap(ctx.Err(), "context cancelled during retry")
-		case <-time.After(retryDelay):
-			// Exponential backoff
-			retryDelay *= 2
-		}
-	}
-
-	s.logger.Error("Failed to process event after retries",
-		lastErr,
-		"event_id", event.Outbox.Id,
-		"retries", maxRetries)
-
-	return errors.Wrap(lastErr, "failed to process event after retries")
+	// 	// Wait before retrying, but respect context cancellation
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return errors.Wrap(ctx.Err(), "context cancelled during retry")
+	// 	case <-time.After(retryDelay):
+	// 		// Exponential backoff
+	// 		retryDelay *= 2
+	// 	}
+	// }
 }
