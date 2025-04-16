@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
@@ -38,10 +39,6 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		return nil, errors.New("bootstrap servers is required")
 	}
 
-	if cfg.ClientID == "" {
-		cfg.ClientID = "outbox-service"
-	}
-
 	// Default to RequiredAcks = -1 (all) if not specified
 	if cfg.RequiredAcks == 0 {
 		cfg.RequiredAcks = -1 // -1 means all brokers must acknowledge
@@ -52,10 +49,26 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		"client_id", cfg.ClientID,
 		"required_acks", cfg.RequiredAcks)
 
+	var requiredAcks kgo.Acks
+	switch cfg.RequiredAcks {
+	case -1:
+		requiredAcks = kgo.AllISRAcks()
+	case 0:
+		requiredAcks = kgo.NoAck()
+	case 1:
+		requiredAcks = kgo.LeaderAck()
+	default:
+		requiredAcks = kgo.AllISRAcks() // Default to all ISR acks
+	}
+
+	connectTimeout := 30 * time.Second
+
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.BootstrapServers...),
 		kgo.ClientID(cfg.ClientID),
-		// Use default timeouts since RequestTimeout is not available in this version
+		kgo.RequiredAcks(requiredAcks),
+		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
+		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
 	}
 
 	client, err := kgo.NewClient(opts...)
@@ -64,25 +77,21 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		return nil, errors.Wrap(err, "failed to create Kafka client")
 	}
 
-	// Validate connection by pinging the brokers
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
 
-	log.Debug("Validating Kafka connection")
-	// The first produce will fail if connection is invalid
-	// We'll use a ping record to test the connection
+	hostname := os.Getenv("HOST")
 	pingRecord := &kgo.Record{
-		Topic: "ping", // This topic doesn't need to exist
-		Value: []byte("ping"),
+		Topic: "_ping",
+		Value: []byte(hostname),
 	}
 
-	// Try to produce a ping message to validate connection
-	// This will fail, but that's expected - we just want to ensure we can connect
 	out := client.ProduceSync(ctx, pingRecord)
-	log.Info("ping record", "out", out.FirstErr().Error())
-
-	// Log connection status
-	log.Info("Kafka client initialized", "bootstrap_servers", cfg.BootstrapServers[0])
-	log.Info("Successfully connected to Kafka")
+	if err := out.FirstErr(); err != nil {
+		log.Fatal("ping record error", err)
+	} else {
+		log.Info("ping record successful")
+	}
 
 	return &KafkaAdapter{
 		client: client,
