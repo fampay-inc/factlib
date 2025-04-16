@@ -80,10 +80,13 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 
-	hostname := os.Getenv("HOST")
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
 	pingRecord := &kgo.Record{
 		Topic: "_ping",
-		Value: []byte(hostname),
+		Value: []byte("host-" + hostname),
 	}
 
 	out := client.ProduceSync(ctx, pingRecord)
