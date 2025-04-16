@@ -73,7 +73,7 @@ func TestRegisterProtoHandler(t *testing.T) {
 	}
 
 	// Register a handler
-	handler := func(ctx context.Context, event *pb.OutboxEvent) error {
+	handler := func(ctx context.Context, event *postgres.Event) error {
 		return nil
 	}
 	consumer.RegisterProtoHandler("user", handler)

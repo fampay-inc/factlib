@@ -69,15 +69,15 @@ func TestNewPostgresAdapter(t *testing.T) {
 	// Test with valid executor
 	t.Run("valid executor", func(t *testing.T) {
 		mockExecutor := &MockExecutor{}
-		adapter, err := NewPostgresAdapter(mockExecutor, log)
+		adapter, err := NewPostgresAdapter(mockExecutor, "prefix", log)
 		assert.NoError(t, err)
 		assert.NotNil(t, adapter)
-		assert.Equal(t, defaultOutboxPrefix, adapter.prefix)
+		assert.Equal(t, "outbox", adapter.prefix)
 	})
 
 	// Test with nil executor
 	t.Run("nil executor", func(t *testing.T) {
-		adapter, err := NewPostgresAdapter(nil, log)
+		adapter, err := NewPostgresAdapter(nil, "prefix", log)
 		assert.Error(t, err)
 		assert.Nil(t, adapter)
 		assert.Contains(t, err.Error(), "executor cannot be nil")

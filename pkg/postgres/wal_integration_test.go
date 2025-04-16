@@ -91,7 +91,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	require.NoError(t, err, "Failed to create pgx executor")
 
 	// Create the adapter with the executor
-	adapter, err := producer.NewPostgresAdapter(executor, logr)
+	adapter, err := producer.NewPostgresAdapter(executor, "prefix", logr)
 	require.NoError(t, err, "Failed to create PostgreSQL outbox producer")
 
 	// Set a custom prefix for the test
