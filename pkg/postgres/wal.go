@@ -30,8 +30,9 @@ type WALConfig struct {
 }
 
 type Event struct {
-	Outbox  common.OutboxEvent
-	XLogPos pglogrepl.LSN
+	Outbox       common.OutboxEvent
+	XLogPos      pglogrepl.LSN
+	OutboxPrefix string
 }
 
 // WALSubscriber implements the common.WALSubscriber interface
@@ -362,7 +363,10 @@ func (w *WALSubscriber) SendStandbyStatusUpdate() error {
 // handleProtoMessage processes a Protobuf message from the notification
 func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, xLogPos pglogrepl.LSN) {
 	// Create a pointer to a protobuf OutboxEvent
-	event := &Event{}
+	event := &Event{
+		OutboxPrefix: w.cfg.OutboxPrefix,
+		XLogPos:      xLogPos,
+	}
 	if err := proto.Unmarshal(content, &event.Outbox); err != nil {
 		w.logger.Error("Failed to unmarshal Protobuf event", err, "content_length", len(content))
 		return
@@ -373,7 +377,6 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, 
 	if event.Outbox.CreatedAt == 0 {
 		event.Outbox.CreatedAt = time.Now().Unix()
 	}
-	event.XLogPos = xLogPos
 	w.logger.Debug("Protobuf event received",
 		"id", event.Outbox.Id,
 		"aggregate_type", event.Outbox.AggregateType,

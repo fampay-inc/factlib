@@ -2,11 +2,12 @@ package consumer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
-	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
+	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	"github.com/pkg/errors"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
@@ -159,35 +160,37 @@ func (a *KafkaAdapter) Close() error {
 }
 
 // KafkaProtoEventHandler creates an event handler that publishes protobuf events to Kafka
-func KafkaProtoEventHandler(producer KafkaProducer, topic string) ProtoEventHandler {
-	return func(ctx context.Context, event *pb.OutboxEvent) error {
+func KafkaProtoEventHandler(producer KafkaProducer) ProtoEventHandler {
+	loggerConfig := logger.Config{
+		Level:      "debug",
+		WithCaller: true,
+	}
+	log := logger.New(loggerConfig)
+	return func(ctx context.Context, event *postgres.Event) error {
 		// Use aggregate ID as the key for partitioning
-		key := []byte(event.AggregateId)
-
+		key := []byte(event.Outbox.AggregateId)
 		// Convert event to protobuf
-		value, err := proto.Marshal(event)
+		value, err := proto.Marshal(&event.Outbox)
 		if err != nil {
 			return errors.Wrap(err, "failed to marshal proto event")
 		}
 
 		// Create headers
 		headers := map[string]string{
-			"aggregate_type": event.AggregateType,
-			"event_type":     event.EventType,
-			"created_at":     time.Unix(0, event.CreatedAt).Format(time.RFC3339),
+			"aggregate_type": event.Outbox.AggregateType,
+			"event_type":     event.Outbox.EventType,
+			"created_at":     time.Unix(0, event.Outbox.CreatedAt).String(),
 			"content_type":   "application/protobuf",
 		}
 
-		// Add metadata to headers
-		for k, v := range event.Metadata {
-			headers[k] = v
-		}
-
-		// Produce message to Kafka
+		topic := fmt.Sprintf("%s.%s", event.OutboxPrefix, event.Outbox.AggregateType)
+		log.Debug("Attempting to produce message to Kafka",
+			"topic", topic,
+			"key", string(key))
 		if err := producer.Produce(ctx, topic, key, value, headers); err != nil {
 			return errors.Wrap(err, "failed to produce message")
 		}
-
+		log.Info("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic)
 		return nil
 	}
 }

@@ -14,11 +14,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	// Default prefix for logical decoding messages
-	defaultOutboxPrefix = "proto_outbox"
-)
-
 // OutboxProducer defines the interface for emitting outbox events
 type OutboxProducer interface {
 	// EmitEvent emits a Protobuf outbox event
@@ -41,14 +36,14 @@ type PostgresAdapter struct {
 }
 
 // NewPostgresAdapter creates a new PostgresAdapter with the provided SQLExecutor
-func NewPostgresAdapter(executor SQLExecutor, log *logger.Logger) (*PostgresAdapter, error) {
+func NewPostgresAdapter(executor SQLExecutor, prefix string, log *logger.Logger) (*PostgresAdapter, error) {
 	if executor == nil {
 		return nil, errors.New("executor cannot be nil")
 	}
 
 	return &PostgresAdapter{
 		executor: executor,
-		prefix:   defaultOutboxPrefix,
+		prefix:   prefix,
 		logger:   log,
 	}, nil
 }

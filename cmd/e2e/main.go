@@ -7,9 +7,7 @@ import (
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/consumer"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/producer"
-	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
 	"github.com/jackc/pgx/v5"
-	"google.golang.org/protobuf/proto"
 )
 
 type AppConfig struct {
@@ -33,7 +31,7 @@ func init() {
 		DatabaseURL:         "postgres://postgres:postgres@localhost:6432/outbox_example",
 		ReplicationSlotName: "outbox_slot",
 		PublicationName:     "outbox_pub",
-		OutboxPrefix:        "proto_outbox",
+		OutboxPrefix:        "westeros_app",
 	}
 }
 
@@ -105,44 +103,7 @@ func OutboxService(ctx context.Context) error {
 	defer outboxConsumer.Stop()
 
 	// Register handler for user events
-	outboxConsumer.RegisterProtoHandler("user", func(ctx context.Context, event *pb.OutboxEvent) error {
-		// Process the event
-		log.Info("Processing user event",
-			"id", event.Id,
-			"aggregate_id", event.AggregateId,
-			"event_type", event.EventType,
-			"payload_size", len(event.Payload))
-
-		// Publish to Kafka
-		key := []byte(event.AggregateId)
-		value, err := proto.Marshal(event)
-		if err != nil {
-			log.Error("Failed to marshal event", err, "event_id", event.Id)
-			return err
-		}
-		log.Debug("Marshaled event to protobuf", "event_id", event.Id, "value_size", len(value))
-
-		// Add headers
-		headers := map[string]string{
-			"event_type": event.EventType,
-			"source":     "outbox",
-		}
-
-		// Publish to Kafka
-		log.Debug("Attempting to produce message to Kafka",
-			"topic", "user-events",
-			"key", string(key),
-			"bootstrap_servers", kafkaConfig.BootstrapServers)
-
-		err = kafkaAdapter.Produce(ctx, "user-events", key, value, headers)
-		if err != nil {
-			log.Error("Failed to produce message to Kafka", err, "event_id", event.Id)
-			return err
-		}
-
-		log.Info("Successfully produced message to Kafka", "event_id", event.Id, "topic", "user-events")
-		return nil
-	})
+	outboxConsumer.RegisterProtoHandler(cfg.OutboxPrefix, consumer.KafkaProtoEventHandler(kafkaAdapter))
 
 	// Start the consumer
 	if err := outboxConsumer.Start(ctx); err != nil {
@@ -169,7 +130,7 @@ func createUserWithEvents(ctx context.Context, pgConn *pgx.Conn, userData []byte
 		return err
 	}
 
-	outboxProducer, err := producer.NewPostgresAdapter(executor, log)
+	outboxProducer, err := producer.NewPostgresAdapter(executor, cfg.OutboxPrefix, log)
 	if err != nil {
 		return err
 	}

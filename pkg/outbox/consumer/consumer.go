@@ -5,10 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
-	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
 	"github.com/pkg/errors"
 )
 
@@ -20,19 +18,15 @@ const (
 type OutboxConsumer struct {
 	walSubscriber *postgres.WALSubscriber
 	logger        *logger.Logger
-	handlers      map[string]EventHandler
-	protoHandlers map[string]ProtoEventHandler
+	Handlers      map[string]ProtoEventHandler
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
-// EventHandler handles JSON outbox events
-type EventHandler func(ctx context.Context, event *common.OutboxEvent) error
-
 // ProtoEventHandler handles Protobuf outbox events
-type ProtoEventHandler func(ctx context.Context, event *pb.OutboxEvent) error
+type ProtoEventHandler func(ctx context.Context, event *postgres.Event) error
 
 // Config represents the configuration for the OutboxConsumer
 type Config struct {
@@ -83,22 +77,16 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 	return &OutboxConsumer{
 		walSubscriber: walSubscriber,
 		logger:        log,
-		handlers:      make(map[string]EventHandler),
-		protoHandlers: make(map[string]ProtoEventHandler),
+		Handlers:      make(map[string]ProtoEventHandler),
 		stopCh:        make(chan struct{}),
 		ctx:           consumerCtx,
 		cancel:        cancel,
 	}, nil
 }
 
-// RegisterHandler registers a handler for a specific aggregate type
-func (s *OutboxConsumer) RegisterHandler(aggregateType string, handler EventHandler) {
-	s.handlers[aggregateType] = handler
-}
-
 // RegisterProtoHandler registers a protobuf handler for a specific aggregate type
 func (s *OutboxConsumer) RegisterProtoHandler(aggregateType string, handler ProtoEventHandler) {
-	s.protoHandlers[aggregateType] = handler
+	s.Handlers[aggregateType] = handler
 }
 
 // Start starts the OutboxConsumer
@@ -132,7 +120,7 @@ func (s *OutboxConsumer) Stop() error {
 }
 
 // processEvents processes events from the WAL subscriber
-func (s *OutboxConsumer) processEvents(events <-chan *common.OutboxEvent) {
+func (s *OutboxConsumer) processEvents(events <-chan *postgres.Event) {
 	defer s.wg.Done()
 
 	for {
@@ -149,87 +137,62 @@ func (s *OutboxConsumer) processEvents(events <-chan *common.OutboxEvent) {
 				return
 			}
 
-			// Process the event
 			s.logger.Debug("Received event from WAL",
-				"id", event.Id,
-				"aggregate_type", event.AggregateType,
-				"event_type", event.EventType)
-
-			// Convert to protobuf event
-			protoEvent := &pb.OutboxEvent{
-				Id:            event.Id,
-				AggregateType: event.AggregateType,
-				AggregateId:   event.AggregateId,
-				EventType:     event.EventType,
-				Payload:       event.Payload,
-				CreatedAt:     event.CreatedAt,
-				Metadata:      event.Metadata,
-			}
-
+				"id", event.Outbox.Id,
+				"aggregate_type", event.Outbox.AggregateType,
+				"event_type", event.Outbox.EventType)
 			// Handle the event
-			s.handleProtoEvent(s.ctx, protoEvent)
+			s.handleProtoEvent(s.ctx, event)
 		}
 	}
 }
 
 // handleProtoEvent handles a Protobuf event
-func (s *OutboxConsumer) handleProtoEvent(ctx context.Context, event *pb.OutboxEvent) {
+func (s *OutboxConsumer) handleProtoEvent(ctx context.Context, event *postgres.Event) {
 	s.logger.Debug("Processing Protobuf event",
-		"id", event.Id,
-		"aggregate_type", event.AggregateType,
-		"event_type", event.EventType)
+		"id", event.XLogPos)
 
-	handler, ok := s.protoHandlers[event.AggregateType]
+	handler, ok := s.Handlers[event.OutboxPrefix]
 	if !ok {
-		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.AggregateType)
+		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.OutboxPrefix)
 		return
 	}
 
 	if err := handler(ctx, event); err != nil {
 		s.logger.Error("Failed to handle event",
 			err,
-			"id", event.Id,
-			"aggregate_type", event.AggregateType,
-			"event_type", event.EventType)
+			"id", event.Outbox.Id,
+			"aggregate_type", event.Outbox.AggregateType,
+			"event_type", event.Outbox.EventType)
 		return
 	}
 
-	s.logger.Debug("Successfully processed event", "id", event.Id)
+	s.logger.Debug("Successfully processed event", "id", event.Outbox.Id)
 }
 
 // processEvent processes an event from the WAL subscriber
-func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxEvent) error {
-	s.logger.Debug("Processing Protobuf event",
-		"id", event.Id,
-		"aggregate_type", event.AggregateType,
-		"event_type", event.EventType)
-
-	// Log the event details
-	s.logger.Info("Processing user event",
-		"id", event.Id,
-		"aggregate_id", event.AggregateId,
-		"event_type", event.EventType,
-		"payload_size", len(event.Payload))
+func (s *OutboxConsumer) processEvent(ctx context.Context, event *postgres.Event) error {
+	s.logger.Debug("Processing event",
+		"id", event.Outbox.Id,
+		"aggregate_type", event.Outbox.AggregateType,
+		"event_type", event.Outbox.EventType)
 
 	// Determine the topic name based on the aggregate type
-	topic := event.AggregateType + "-events"
-
-	// We'll let the handler deal with headers if needed
-
+	topic := event.Outbox.AggregateType + "-events"
 	// Log the Kafka producer details
 	s.logger.Debug("Attempting to produce message to Kafka",
 		"topic", topic,
-		"key", event.AggregateId)
+		"key", event.Outbox.AggregateId)
 
 	// Implement retry logic for Kafka production
 	const maxRetries = 3
 	retryDelay := 500 * time.Millisecond
 
 	// Get the Kafka producer from the handler
-	handler, ok := s.protoHandlers[event.AggregateType]
+	handler, ok := s.Handlers[event.OutboxPrefix]
 	if !ok {
-		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.AggregateType)
-		return errors.Errorf("no handler registered for aggregate type %s", event.AggregateType)
+		s.logger.Warn("No handler registered for aggregate type", "aggregate_type", event.OutboxPrefix)
+		return errors.Errorf("no handler registered for aggregate type %s", event.OutboxPrefix)
 	}
 
 	// Process the event using the registered handler
@@ -244,7 +207,7 @@ func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxE
 		if err == nil {
 			// Success!
 			s.logger.Info("Successfully processed event",
-				"event_id", event.Id,
+				"event_id", event.Outbox.Id,
 				"topic", topic,
 				"attempt", i+1)
 			return nil
@@ -253,7 +216,7 @@ func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxE
 		lastErr = err
 		s.logger.Warn("Failed to process event, retrying",
 			"error", err.Error(),
-			"event_id", event.Id,
+			"event_id", event.Outbox.Id,
 			"attempt", i+1,
 			"max_retries", maxRetries)
 
@@ -269,7 +232,7 @@ func (s *OutboxConsumer) processEvent(ctx context.Context, event *common.OutboxE
 
 	s.logger.Error("Failed to process event after retries",
 		lastErr,
-		"event_id", event.Id,
+		"event_id", event.Outbox.Id,
 		"retries", maxRetries)
 
 	return errors.Wrap(lastErr, "failed to process event after retries")

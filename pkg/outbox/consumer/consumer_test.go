@@ -7,7 +7,9 @@ import (
 
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
@@ -54,7 +56,7 @@ type MockProtoEventHandler struct {
 	mock.Mock
 }
 
-func (m *MockProtoEventHandler) Handle(ctx context.Context, event *pb.OutboxEvent) error {
+func (m *MockProtoEventHandler) Handle(ctx context.Context, event *postgres.Event) error {
 	args := m.Called(ctx, event)
 	return args.Error(0)
 }
@@ -64,28 +66,10 @@ func TestNewOutboxConsumer(t *testing.T) {
 	t.Skip("Requires a real database connection")
 }
 
-func TestRegisterHandler(t *testing.T) {
-	// Create a new consumer
-	consumer := &OutboxConsumer{
-		handlers:      make(map[string]EventHandler),
-		protoHandlers: make(map[string]ProtoEventHandler),
-	}
-
-	// Register a handler
-	handler := func(ctx context.Context, event *common.OutboxEvent) error {
-		return nil
-	}
-	consumer.RegisterHandler("user", handler)
-
-	// Verify the handler was registered
-	assert.NotNil(t, consumer.handlers["user"])
-}
-
 func TestRegisterProtoHandler(t *testing.T) {
 	// Create a new consumer
 	consumer := &OutboxConsumer{
-		handlers:      make(map[string]EventHandler),
-		protoHandlers: make(map[string]ProtoEventHandler),
+		Handlers: make(map[string]ProtoEventHandler),
 	}
 
 	// Register a handler
@@ -95,7 +79,7 @@ func TestRegisterProtoHandler(t *testing.T) {
 	consumer.RegisterProtoHandler("user", handler)
 
 	// Verify the handler was registered
-	assert.NotNil(t, consumer.protoHandlers["user"])
+	assert.NotNil(t, consumer.Handlers["user"])
 }
 
 // JSON handling has been removed as part of the refactoring
@@ -104,31 +88,36 @@ func TestHandleProtoMessage(t *testing.T) {
 	// Create a new consumer
 	log := &logger.Logger{}
 	consumer := &OutboxConsumer{
-		logger:        log,
-		protoHandlers: make(map[string]ProtoEventHandler),
+		logger:   log,
+		Handlers: make(map[string]ProtoEventHandler),
 	}
 
 	// Create a test event
-	event := &pb.OutboxEvent{
-		Id:           "123",
+	ob := pb.OutboxEvent{
+		Id:            "123",
 		AggregateType: "user",
-		AggregateId:  "456",
-		EventType:    "user_created",
-		Payload:      []byte(`{"name":"John"}`),
-		CreatedAt:    time.Now().UnixNano(),
-		Metadata:     map[string]string{"source": "test"},
+		AggregateId:   "456",
+		EventType:     "user_created",
+		Payload:       []byte(`{"name":"John"}`),
+		CreatedAt:     time.Now().UnixNano(),
+		Metadata:      map[string]string{"source": "test"},
+	}
+	event := &postgres.Event{
+		Outbox:       ob,
+		OutboxPrefix: "protobox",
+		XLogPos:      pglogrepl.LSN(420),
 	}
 
 	// Register a mock handler with a matcher function
 	mockHandler := new(MockProtoEventHandler)
-	mockHandler.On("Handle", mock.Anything, mock.MatchedBy(func(e *pb.OutboxEvent) bool {
-		return e.Id == event.Id && 
-			e.AggregateType == event.AggregateType && 
-			e.AggregateId == event.AggregateId && 
-			e.EventType == event.EventType
+	mockHandler.On("Handle", mock.Anything, mock.MatchedBy(func(e *postgres.Event) bool {
+		return e.Outbox.Id == event.Outbox.Id &&
+			e.Outbox.AggregateType == event.Outbox.AggregateType &&
+			e.Outbox.AggregateId == event.Outbox.AggregateId &&
+			e.Outbox.EventType == event.Outbox.EventType
 	})).Return(nil)
-	
-	consumer.protoHandlers["user"] = mockHandler.Handle
+
+	consumer.Handlers["user"] = mockHandler.Handle
 
 	// Handle the message
 	consumer.handleProtoEvent(context.Background(), event)
