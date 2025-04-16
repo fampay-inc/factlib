@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/producer"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
@@ -126,7 +125,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	require.NoError(t, err, "Failed to create WAL subscriber")
 
 	// Create a channel and wait group to synchronize the test
-	messageReceived := make(chan *common.OutboxEvent)
+	messageReceived := make(chan *postgres.Event)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
@@ -187,9 +186,10 @@ func TestWALSubscriberIntegration(t *testing.T) {
 
 	// Wait for the message to be received or timeout
 	select {
-	case receivedEvent := <-messageReceived:
+	case pgEvent := <-messageReceived:
 		// Message received successfully
 		// Verify the received event matches what we sent
+		receivedEvent := pgEvent.Outbox
 		logr.Info("Received event", "event_id", receivedEvent.Id, "expected_id", publishedID)
 		assert.Equal(t, publishedID, receivedEvent.Id, "Event ID should match")
 		assert.Equal(t, "integration_test", receivedEvent.AggregateType, "Aggregate type should match")

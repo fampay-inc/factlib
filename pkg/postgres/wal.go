@@ -26,15 +26,29 @@ type WALConfig struct {
 	ReplicationSlotName string
 	PublicationName     string
 	OutboxPrefix        string // Prefix for logical decoding messages
+	HealthPort          int
+}
+
+type Event struct {
+	Outbox  common.OutboxEvent
+	XLogPos pglogrepl.LSN
 }
 
 // WALSubscriber implements the common.WALSubscriber interface
 type WALSubscriber struct {
-	cfg       WALConfig
-	replConn  *pgconn.PgConn // Connection for replication
-	queryConn *pgx.Conn      // Connection for regular queries
-	logger    *logger.Logger
-	events    chan *common.OutboxEvent
+	cfg            WALConfig
+	ctx            context.Context
+	replConn       *pgconn.PgConn // Connection for replication
+	queryConn      *pgx.Conn      // Connection for regular queries
+	logger         *logger.Logger
+	events         chan *Event
+	ConsumerHealth ConsumerHealth
+
+	xLogPos pglogrepl.LSN
+
+	WalStandyStatusUpdateCounter func(context.Context, string, string)
+	ReplicaLagMetricFunc         func(context.Context, int64)
+	RecoverFromPanic             func() func()
 }
 
 // NewWALSubscriber creates a new WAL subscriber
@@ -42,12 +56,12 @@ func NewWALSubscriber(cfg WALConfig, log *logger.Logger) (*WALSubscriber, error)
 	return &WALSubscriber{
 		cfg:    cfg,
 		logger: log,
-		events: make(chan *common.OutboxEvent, 100),
+		events: make(chan *Event, 1000),
 	}, nil
 }
 
 // Subscribe subscribes to WAL events and returns a channel of OutboxEvents
-func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *common.OutboxEvent, error) {
+func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *Event, error) {
 	// Connect using pgconn directly for replication mode
 	var err error
 	w.replConn, err = pgconn.Connect(ctx, w.replicationConnectionString())
@@ -307,23 +321,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 					continue
 				}
 
-				// Update our position in the WAL
-				// Make sure to update the position before processing the message
-				newPos := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
-				// w.logger.Debug("updating WAL position", "old_pos", xLogPos.String(), "new_pos", newPos.String(), "server_end", xld.ServerWALEnd.String())
-				xLogPos = newPos
-
-				// Send a status update immediately after receiving data to acknowledge it
-				err = pglogrepl.SendStandbyStatusUpdate(ctx, w.replConn, pglogrepl.StandbyStatusUpdate{
-					WALWritePosition: xLogPos,
-					WALFlushPosition: xLogPos,
-					WALApplyPosition: xLogPos,
-					ClientTime:       time.Now(),
-				})
-				if err != nil {
-					w.logger.Error("failed to send immediate standby status update", err, "error", err.Error())
-				}
-				// Reset the deadline since we just sent a status update
+				newXLogPos := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 				nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
 
 				// Parse the logical replication message
@@ -335,9 +333,8 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 						"data_hex", fmt.Sprintf("%x", xld.WALData))
 					continue
 				}
-
 				// Process the logical message
-				w.processLogicalMessage(ctx, logicalMsg)
+				w.processLogicalMessage(ctx, logicalMsg, newXLogPos)
 			}
 		default:
 			// w.logger.Debug("received unexpected message type", "type", fmt.Sprintf("%T", rawMsg))
@@ -345,35 +342,53 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	}
 }
 
+func (w *WALSubscriber) SendStandbyStatusUpdate() error {
+	err := pglogrepl.SendStandbyStatusUpdate(w.ctx, w.replConn, pglogrepl.StandbyStatusUpdate{
+		WALWritePosition: w.xLogPos,
+		WALFlushPosition: w.xLogPos,
+		WALApplyPosition: w.xLogPos,
+		ClientTime:       time.Now(),
+	})
+	if err != nil {
+		w.logger.Error("failed to send immediate standby status update", err, "error", err.Error())
+		w.ConsumerHealth.SetHealth(false)
+		w.WalStandyStatusUpdateCounter(w.ctx, "error", err.Error())
+		return err
+	}
+	w.ConsumerHealth.SetHealth(true)
+	return nil
+}
+
 // handleProtoMessage processes a Protobuf message from the notification
-func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte) {
+func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, xLogPos pglogrepl.LSN) {
 	// Create a pointer to a protobuf OutboxEvent
-	event := &common.OutboxEvent{}
-	if err := proto.Unmarshal(content, event); err != nil {
+	event := &Event{}
+	if err := proto.Unmarshal(content, &event.Outbox); err != nil {
 		w.logger.Error("Failed to unmarshal Protobuf event", err, "content_length", len(content))
 		return
 	}
-	if event.Id == "" {
-		event.Id = uuid.New().String()
+	if event.Outbox.Id == "" {
+		event.Outbox.Id = uuid.New().String()
 	}
-	if event.CreatedAt == 0 {
-		event.CreatedAt = time.Now().Unix()
+	if event.Outbox.CreatedAt == 0 {
+		event.Outbox.CreatedAt = time.Now().Unix()
 	}
+	event.XLogPos = xLogPos
 	w.logger.Debug("Protobuf event received",
-		"id", event.Id,
-		"aggregate_type", event.AggregateType,
-		"aggregate_id", event.AggregateId,
-		"event_type", event.EventType,
-		"payload_size", len(event.Payload))
+		"id", event.Outbox.Id,
+		"aggregate_type", event.Outbox.AggregateType,
+		"aggregate_id", event.Outbox.AggregateId,
+		"event_type", event.Outbox.EventType,
+		"payload_size", len(event.Outbox.Payload))
 	select {
 	case w.events <- event:
-		w.logger.Debug("Protobuf event sent to channel", "id", event.Id)
+		w.logger.Debug("Protobuf event sent to channel", "id", event.Outbox.Id)
 	case <-ctx.Done():
 		return
 	}
 }
 
-func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl.Message) {
+func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl.Message, xLogPos pglogrepl.LSN) {
 	// Process logical decoding messages specifically
 	if ldm, ok := msg.(*pglogrepl.LogicalDecodingMessage); ok {
 		w.logger.Info("Logical decoding message received",
@@ -384,7 +399,7 @@ func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl
 		w.logger.Debug("Checking message prefix", "message_prefix", ldm.Prefix, "configured_prefix", w.cfg.OutboxPrefix)
 
 		if ldm.Prefix == w.cfg.OutboxPrefix {
-			w.handleProtoMessage(ctx, ldm.Content)
+			w.handleProtoMessage(ctx, ldm.Content, xLogPos)
 		}
 	} else {
 		w.logger.Debug("Received unexpected message type", "type", fmt.Sprintf("%T", msg))
