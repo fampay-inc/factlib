@@ -88,7 +88,7 @@ func TestWithPrefix(t *testing.T) {
 	log := &logger.Logger{}
 	mockExecutor := &MockExecutor{}
 
-	adapter, err := NewPostgresAdapter(mockExecutor, log)
+	adapter, err := NewPostgresAdapter(mockExecutor, "prefix", log)
 	assert.NoError(t, err)
 
 	// Test with custom prefix
@@ -116,7 +116,7 @@ func TestEmitEvent(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewPostgresAdapter(mockExecutor, log)
+	adapter, err := NewPostgresAdapter(mockExecutor, "prefix", log)
 	assert.NoError(t, err)
 
 	// Test with valid event

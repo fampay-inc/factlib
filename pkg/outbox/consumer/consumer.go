@@ -66,7 +66,7 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 	}
 
 	// Create WAL subscriber
-	walSubscriber, err := postgres.NewWALSubscriber(walConfig, log)
+	walSubscriber, err := postgres.NewWALSubscriber(ctx, walConfig, log)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create WAL subscriber")
 	}

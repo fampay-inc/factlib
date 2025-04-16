@@ -53,36 +53,41 @@ type WALSubscriber struct {
 }
 
 // NewWALSubscriber creates a new WAL subscriber
-func NewWALSubscriber(cfg WALConfig, log *logger.Logger) (*WALSubscriber, error) {
+func NewWALSubscriber(ctx context.Context, cfg WALConfig, log *logger.Logger) (*WALSubscriber, error) {
+	// Create a separate connection for replication
+	replUrl := fmt.Sprintf("%s?replication=database", cfg.DatabaseURL)
+	replConn, err := pgconn.Connect(ctx, replUrl)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to connect to database for replication")
+	}
+	// Create a separate connection for regular queries
+	queryConn, err := pgx.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to connect to database for queries")
+	}
+
+	err = queryConn.Ping(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to ping database")
+	}
+
 	return &WALSubscriber{
-		cfg:    cfg,
-		logger: log,
-		events: make(chan *Event, 1000),
+		cfg:       cfg,
+		ctx:       ctx,
+		replConn:  replConn,
+		queryConn: queryConn,
+		logger:    log,
+		events:    make(chan *Event, 1000),
 	}, nil
 }
 
 // Subscribe subscribes to WAL events and returns a channel of OutboxEvents
 func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *Event, error) {
-	// Connect using pgconn directly for replication mode
-	var err error
-	w.replConn, err = pgconn.Connect(ctx, w.replicationConnectionString())
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to database for replication")
-	}
-
-	// Create a separate connection for regular queries
-	w.queryConn, err = pgx.Connect(ctx, w.cfg.DatabaseURL)
-	if err != nil {
-		w.Close()
-		return nil, errors.Wrap(err, "failed to connect to database for queries")
-	}
-
 	// Ensure publication exists
 	if err := w.ensurePublication(ctx); err != nil {
 		w.Close()
 		return nil, err
 	}
-
 	// Ensure replication slot exists
 	if err := w.ensureReplicationSlot(ctx); err != nil {
 		w.Close()
@@ -93,6 +98,33 @@ func (w *WALSubscriber) Subscribe(ctx context.Context) (<-chan *Event, error) {
 	go w.startReplication(ctx)
 
 	return w.events, nil
+}
+
+func (w *WALSubscriber) getxLogPos() (pglogrepl.LSN, error) {
+	var strLSN string
+	err := w.queryConn.QueryRow(w.ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1;", w.cfg.ReplicationSlotName).Scan(&strLSN)
+	if err != nil {
+		w.logger.Info("failed to get confirmed flush LSN", err, "error", err.Error())
+		return 0, err
+	}
+	xLogPos, err := pglogrepl.ParseLSN(strLSN)
+	if err == nil {
+		w.logger.Info("using last confirmed flush LSN", "xLog", xLogPos.String())
+		return xLogPos, nil
+	}
+	w.logger.Info("failed to get last confirmed LSN", "error", err.Error())
+
+	identifyResult, err := pglogrepl.IdentifySystem(w.ctx, w.replConn)
+	if err != nil {
+		w.logger.Error("failed to identify system", err, "error", err.Error())
+		return 0, err
+	}
+
+	w.logger.Info("using identified system",
+		"systemID", identifyResult.SystemID,
+		"timeline", identifyResult.Timeline,
+		"xLogPos", w.xLogPos.String())
+	return identifyResult.XLogPos, nil
 }
 
 // Close closes the subscriber
@@ -159,11 +191,6 @@ func (w *WALSubscriber) CheckReplicationSlot(ctx context.Context) (map[string]in
 	}, nil
 }
 
-// replicationConnectionString returns the connection string for replication
-func (w *WALSubscriber) replicationConnectionString() string {
-	return fmt.Sprintf("%s?replication=database", w.cfg.DatabaseURL)
-}
-
 // ensurePublication ensures the publication exists
 func (w *WALSubscriber) ensurePublication(ctx context.Context) error {
 	var exists bool
@@ -206,19 +233,8 @@ func (w *WALSubscriber) ensureReplicationSlot(ctx context.Context) error {
 // startReplication starts the replication process
 func (w *WALSubscriber) startReplication(ctx context.Context) {
 	// Identify the system to get the current WAL position
-	identifyResult, err := pglogrepl.IdentifySystem(ctx, w.replConn)
-	if err != nil {
-		w.logger.Error("failed to identify system", err, "error", err.Error())
-		return
-	}
-
-	w.xLogPos = identifyResult.XLogPos
-
-	w.logger.Info("identified system",
-		"systemID", identifyResult.SystemID,
-		"timeline", identifyResult.Timeline,
-		"xLogPos", w.xLogPos.String())
-
+	var err error
+	w.xLogPos, err = w.getxLogPos()
 	// Start logical replication using the pglogrepl library
 	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, w.xLogPos, pglogrepl.StartReplicationOptions{
 		PluginArgs: []string{
@@ -394,13 +410,6 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, 
 func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl.Message, xLogPos pglogrepl.LSN) {
 	// Process logical decoding messages specifically
 	if ldm, ok := msg.(*pglogrepl.LogicalDecodingMessage); ok {
-		w.logger.Info("Logical decoding message received",
-			"prefix", ldm.Prefix,
-			"transactional", ldm.Transactional,
-			"content_length", len(ldm.Content))
-
-		w.logger.Debug("Checking message prefix", "message_prefix", ldm.Prefix, "configured_prefix", w.cfg.OutboxPrefix)
-
 		if ldm.Prefix == w.cfg.OutboxPrefix {
 			w.handleProtoMessage(ctx, ldm.Content, xLogPos)
 		}

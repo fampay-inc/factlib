@@ -7,6 +7,7 @@ import (
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/consumer"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/producer"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -149,10 +150,11 @@ func createUserWithEvents(ctx context.Context, pgConn *pgx.Conn, userData []byte
 
 	// Emit an outbox event for user creation
 	// This will be written to the WAL and picked up by the consumer
+	id, _ := uuid.NewV7() // aggregate ID (would typically be the actual user ID)
 	eventID, err := outboxProducer.EmitEvent(
 		ctx,
-		"user",         // aggregate type
-		"user-123",     // aggregate ID (would typically be the actual user ID)
+		"user", // aggregate type
+		id.String(),
 		"user.created", // event type
 		userData,       // event payload
 		metadata,       // event metadata

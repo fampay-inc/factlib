@@ -121,7 +121,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	}
 
 	// Create a WAL subscriber instance
-	walSubscriber, err := postgres.NewWALSubscriber(walConfig, logr)
+	walSubscriber, err := postgres.NewWALSubscriber(ctx, walConfig, logr)
 	require.NoError(t, err, "Failed to create WAL subscriber")
 
 	// Create a channel and wait group to synchronize the test
