@@ -159,8 +159,8 @@ func (a *KafkaAdapter) Close() error {
 	return nil
 }
 
-// KafkaProtoEventHandler creates an event handler that publishes protobuf events to Kafka
-func KafkaProtoEventHandler(producer KafkaProducer) ProtoEventHandler {
+// KafkaEventHandler creates an event handler that publishes protobuf events to Kafka
+func KafkaEventHandler(producer KafkaProducer) EventHandler {
 	loggerConfig := logger.Config{
 		Level:      "debug",
 		WithCaller: true,

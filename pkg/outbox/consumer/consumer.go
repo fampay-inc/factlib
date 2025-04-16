@@ -18,20 +18,20 @@ const (
 type OutboxConsumer struct {
 	walSubscriber *postgres.WALSubscriber
 	logger        *logger.Logger
-	Handlers      map[string]ProtoEventHandler
+	Handlers      map[string]EventHandler
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
-// ProtoEventHandler handles Protobuf outbox events
-type ProtoEventHandler func(ctx context.Context, event *postgres.Event) error
+// EventHandler handles Protobuf outbox events
+type EventHandler func(ctx context.Context, event *postgres.Event) error
 
 // Config represents the configuration for the OutboxConsumer
 type Config struct {
 	ConnectionString    string
-	ProtoPrefix         string
+	WalPrefix           string
 	ReplicationSlotName string
 	PublicationName     string
 }
@@ -42,8 +42,8 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 		return nil, errors.New("connection string is required")
 	}
 
-	if cfg.ProtoPrefix == "" {
-		return nil, errors.New("proto prefix is required")
+	if cfg.WalPrefix == "" {
+		return nil, errors.New("prefix is required")
 	}
 
 	// Default values for replication slot and publication if not provided
@@ -62,7 +62,7 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 		DatabaseURL:         cfg.ConnectionString,
 		ReplicationSlotName: replicationSlotName,
 		PublicationName:     publicationName,
-		OutboxPrefix:        cfg.ProtoPrefix,
+		OutboxPrefix:        cfg.WalPrefix,
 	}
 
 	// Create WAL subscriber
@@ -77,15 +77,15 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 	return &OutboxConsumer{
 		walSubscriber: walSubscriber,
 		logger:        log,
-		Handlers:      make(map[string]ProtoEventHandler),
+		Handlers:      make(map[string]EventHandler),
 		stopCh:        make(chan struct{}),
 		ctx:           consumerCtx,
 		cancel:        cancel,
 	}, nil
 }
 
-// RegisterProtoHandler registers a protobuf handler for a specific aggregate type
-func (s *OutboxConsumer) RegisterProtoHandler(aggregateType string, handler ProtoEventHandler) {
+// RegisterHandler registers a protobuf handler for a specific aggregate type
+func (s *OutboxConsumer) RegisterHandler(aggregateType string, handler EventHandler) {
 	s.Handlers[aggregateType] = handler
 }
 
@@ -142,14 +142,14 @@ func (s *OutboxConsumer) processEvents(events <-chan *postgres.Event) {
 				"aggregate_type", event.Outbox.AggregateType,
 				"event_type", event.Outbox.EventType)
 			// Handle the event
-			s.handleProtoEvent(s.ctx, event)
+			s.handleEvent(s.ctx, event)
 		}
 	}
 }
 
-// handleProtoEvent handles a Protobuf event
-func (s *OutboxConsumer) handleProtoEvent(ctx context.Context, event *postgres.Event) {
-	s.logger.Debug("Processing Protobuf event",
+// handleEvent handles a Protobuf event
+func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event) {
+	s.logger.Debug("Processing event",
 		"id", event.XLogPos)
 
 	handler, ok := s.Handlers[event.OutboxPrefix]

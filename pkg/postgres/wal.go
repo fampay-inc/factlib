@@ -45,7 +45,8 @@ type WALSubscriber struct {
 	events         chan *Event
 	ConsumerHealth ConsumerHealth
 
-	xLogPos pglogrepl.LSN
+	xLogPos    pglogrepl.LSN
+	ackXLogPos chan *pglogrepl.LSN
 
 	WalStandyStatusUpdateCounter func(context.Context, string, string)
 	ReplicaLagMetricFunc         func(context.Context, int64)
@@ -376,15 +377,15 @@ func (w *WALSubscriber) SendStandbyStatusUpdate() error {
 	return nil
 }
 
-// handleProtoMessage processes a Protobuf message from the notification
-func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, xLogPos pglogrepl.LSN) {
+// handleMessage processes a Protobuf message from the notification
+func (w *WALSubscriber) handleMessage(ctx context.Context, content []byte, xLogPos pglogrepl.LSN) {
 	// Create a pointer to a protobuf OutboxEvent
 	event := &Event{
 		OutboxPrefix: w.cfg.OutboxPrefix,
 		XLogPos:      xLogPos,
 	}
 	if err := proto.Unmarshal(content, &event.Outbox); err != nil {
-		w.logger.Error("Failed to unmarshal Protobuf event", err, "content_length", len(content))
+		w.logger.Error("Failed to unmarshal event", err, "content_length", len(content))
 		return
 	}
 	if event.Outbox.Id == "" {
@@ -393,7 +394,7 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, 
 	if event.Outbox.CreatedAt == 0 {
 		event.Outbox.CreatedAt = time.Now().Unix()
 	}
-	w.logger.Debug("Protobuf event received",
+	w.logger.Debug("Event received",
 		"id", event.Outbox.Id,
 		"aggregate_type", event.Outbox.AggregateType,
 		"aggregate_id", event.Outbox.AggregateId,
@@ -401,7 +402,7 @@ func (w *WALSubscriber) handleProtoMessage(ctx context.Context, content []byte, 
 		"payload_size", len(event.Outbox.Payload))
 	select {
 	case w.events <- event:
-		w.logger.Debug("Protobuf event sent to channel", "id", event.Outbox.Id)
+		w.logger.Debug("Event sent to channel", "id", event.Outbox.Id)
 	case <-ctx.Done():
 		return
 	}
@@ -411,7 +412,7 @@ func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl
 	// Process logical decoding messages specifically
 	if ldm, ok := msg.(*pglogrepl.LogicalDecodingMessage); ok {
 		if ldm.Prefix == w.cfg.OutboxPrefix {
-			w.handleProtoMessage(ctx, ldm.Content, xLogPos)
+			w.handleMessage(ctx, ldm.Content, xLogPos)
 		}
 	} else {
 		w.logger.Debug("Received unexpected message type", "type", fmt.Sprintf("%T", msg))

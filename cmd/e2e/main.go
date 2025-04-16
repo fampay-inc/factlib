@@ -94,7 +94,7 @@ func OutboxService(ctx context.Context) error {
 	// Set up outbox consumer with processing tracking
 	consumerConfig := consumer.Config{
 		ConnectionString: cfg.DatabaseURL,
-		ProtoPrefix:      cfg.OutboxPrefix,
+		WalPrefix:        cfg.OutboxPrefix,
 	}
 
 	outboxConsumer, err := consumer.NewOutboxConsumer(ctx, consumerConfig, log)
@@ -104,7 +104,7 @@ func OutboxService(ctx context.Context) error {
 	defer outboxConsumer.Stop()
 
 	// Register handler for user events
-	outboxConsumer.RegisterProtoHandler(cfg.OutboxPrefix, consumer.KafkaProtoEventHandler(kafkaAdapter))
+	outboxConsumer.RegisterHandler(cfg.OutboxPrefix, consumer.KafkaEventHandler(kafkaAdapter))
 
 	// Start the consumer
 	if err := outboxConsumer.Start(ctx); err != nil {
