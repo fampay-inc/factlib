@@ -129,7 +129,6 @@ func createUserWithEvents(ctx context.Context, pgConn *pgx.Conn, userData []byte
 	if err != nil {
 		return err
 	}
-	txProducer, err := outboxProducer.WithTx(tx)
 
 	// Insert user data
 	_, err = tx.Exec(ctx, "INSERT INTO users (data) VALUES ($1)", userData)
@@ -146,7 +145,7 @@ func createUserWithEvents(ctx context.Context, pgConn *pgx.Conn, userData []byte
 	// Emit an outbox event for user creation
 	// This will be written to the WAL and picked up by the consumer
 	id, _ := uuid.NewV7() // aggregate ID (would typically be the actual user ID)
-	eventID, err := txProducer.EmitEvent(
+	eventID, err := outboxProducer.WithTx(tx).EmitEvent(
 		ctx,
 		"user",         // aggregate type
 		id.String(),    // aggregate ID
