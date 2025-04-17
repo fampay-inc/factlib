@@ -86,16 +86,9 @@ func TestWALSubscriberIntegration(t *testing.T) {
 
 	logr.Info("PostgreSQL server has logical replication enabled", "wal_level", walLevel)
 
-	// Create a pgx executor for the connection
-	executor, err := producer.NewPgxExecutor(pgConn)
-	require.NoError(t, err, "Failed to create pgx executor")
-
 	// Create the adapter with the executor
-	adapter, err := producer.NewPostgresAdapter(executor, "prefix", logr)
+	producer, err := producer.NewPostgresAdapter(config.OutboxPrefix, logr)
 	require.NoError(t, err, "Failed to create PostgreSQL outbox producer")
-
-	// Set a custom prefix for the test
-	outboxProducer := adapter.WithPrefix(config.OutboxPrefix)
 
 	// Check if the replication slot exists and drop it if it's active
 	var slotExists bool
@@ -167,8 +160,9 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	payload := []byte("test data")
 	metadata := map[string]string{"source": "integration_test"}
 
+	txProd, _ := producer.WithTx(pgConn)
 	// Publish via producer (using pg_logical_emit_message)
-	publishedID, err := outboxProducer.EmitEvent(
+	publishedID, err := txProd.EmitEvent(
 		ctx,
 		"integration_test", // aggregate type
 		eventID,            // aggregate ID

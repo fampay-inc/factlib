@@ -21,6 +21,8 @@ type OutboxProducer interface {
 
 	// WithPrefix sets a custom prefix for logical decoding messages
 	WithPrefix(prefix string) OutboxProducer
+	// WithTx creates a new producer that uses the provided transaction or connection
+	WithTx(tx any) (OutboxProducer, error)
 }
 
 // SQLExecutor defines an interface for executing SQL queries
@@ -30,28 +32,47 @@ type SQLExecutor interface {
 
 // PostgresAdapter is the implementation of OutboxProducer that works with different PostgreSQL connection types
 type PostgresAdapter struct {
-	executor SQLExecutor
-	prefix   string
-	logger   *logger.Logger
+	conn   any
+	prefix string
+	logger *logger.Logger
 }
 
 // NewPostgresAdapter creates a new PostgresAdapter with the provided SQLExecutor
-func NewPostgresAdapter(executor SQLExecutor, prefix string, log *logger.Logger) (*PostgresAdapter, error) {
-	if executor == nil {
-		return nil, errors.New("executor cannot be nil")
+func NewPostgresAdapter(prefix string, log *logger.Logger) (*PostgresAdapter, error) {
+	return &PostgresAdapter{
+		prefix: prefix,
+		logger: log,
+	}, nil
+}
+
+// WithTx creates a producer instance that uses the provided transaction or connection
+func (a *PostgresAdapter) WithTx(conn any) (OutboxProducer, error) {
+	if conn == nil {
+		return nil, errors.New("connection cannot be nil")
+	}
+
+	// Verify connection is a supported type
+	switch conn.(type) {
+	case *pgx.Conn, pgx.Tx, *pgxpool.Pool, *sql.DB, *sql.Tx:
+		// These are all acceptable types
+	default:
+		return nil, errors.New("unsupported connection type")
 	}
 
 	return &PostgresAdapter{
-		executor: executor,
-		prefix:   prefix,
-		logger:   log,
+		conn:   conn,
+		prefix: a.prefix,
+		logger: a.logger,
 	}, nil
 }
 
 // WithPrefix sets a custom prefix for logical decoding messages
 func (a *PostgresAdapter) WithPrefix(prefix string) OutboxProducer {
-	a.prefix = prefix
-	return a
+	return &PostgresAdapter{
+		conn:   a.conn,
+		prefix: prefix,
+		logger: a.logger,
+	}
 }
 
 // EmitEvent emits a Protobuf outbox event
@@ -84,7 +105,7 @@ func (a *PostgresAdapter) EmitEvent(ctx context.Context, aggregateType, aggregat
 		return "", errors.Wrap(err, "failed to marshal proto event")
 	}
 	sqlQuery := "SELECT pg_logical_emit_message(true, $1, $2::bytea)"
-	err = a.executor.Exec(ctx, sqlQuery, a.prefix, protoBytes)
+	err = a.execSQL(ctx, sqlQuery, a.prefix, protoBytes)
 
 	if err != nil {
 		return "", errors.Wrap(err, "failed to emit logical message")
@@ -98,33 +119,25 @@ func (a *PostgresAdapter) EmitEvent(ctx context.Context, aggregateType, aggregat
 	return event.Id, nil
 }
 
-// ValidateConnection validates the PostgreSQL connection and ensures the required extensions are available
-func ValidateConnection(ctx context.Context, conn any) error {
-	// Create appropriate executor based on connection type
-	var executor SQLExecutor
-	var err error
-
-	switch conn.(type) {
-	case *pgx.Conn, *pgxpool.Pool, pgx.Tx:
-		executor, err = NewPgxExecutor(conn)
-		if err != nil {
-			return err
-		}
-	case *sql.DB, *sql.Tx:
-		executor, err = NewSQLDBExecutor(conn)
-		if err != nil {
-			return err
-		}
+// execSQL executes SQL on the appropriate connection type
+func (a *PostgresAdapter) execSQL(ctx context.Context, query string, args ...any) error {
+	switch conn := a.conn.(type) {
+	case *pgx.Conn:
+		_, err := conn.Exec(ctx, query, args...)
+		return err
+	case pgx.Tx:
+		_, err := conn.Exec(ctx, query, args...)
+		return err
+	case *pgxpool.Pool:
+		_, err := conn.Exec(ctx, query, args...)
+		return err
+	case *sql.DB:
+		_, err := conn.ExecContext(ctx, query, args...)
+		return err
+	case *sql.Tx:
+		_, err := conn.ExecContext(ctx, query, args...)
+		return err
 	default:
 		return errors.New("unsupported connection type")
 	}
-
-	// Query PostgreSQL version using the executor
-	err = executor.Exec(ctx, "SELECT version()")
-	if err != nil {
-		return errors.Wrap(err, "failed to get PostgreSQL version")
-	}
-
-	// PostgreSQL 10+ is required for pg_logical_emit_message
-	return nil
 }
