@@ -13,13 +13,3 @@ message OutboxEvent {
   int64 created_at = 6;
   map<string, string> metadata = 7;
 }
-
-service OutboxService {
-  rpc PublishEvent(OutboxEvent) returns (PublishResponse) {}
-}
-
-message PublishResponse {
-  string id = 1;
-  bool success = 2;
-  string error = 3;
-}

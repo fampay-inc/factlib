@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "factlib"
+version = "0.1.0"
+description = "A library for handling facts"
+authors = ["Raghav Sharma <raghav.sharma@fampay.in>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8.1"
+protobuf = "4.24.0"
+grpcio = "^1.56.0"
+django = "2.2.5"
+setuptools = "<78.0.0"
+
+[tool.poetry.dev-dependencies]
+pre-commit = "^2.15.0"
+pytest = "^7.2.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

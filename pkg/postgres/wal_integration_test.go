@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/producer"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
@@ -160,15 +161,16 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	payload := []byte("test data")
 	metadata := map[string]string{"source": "integration_test"}
 
-	txProd, _ := producer.WithTx(pgConn)
+	conn := postgres.GetPgxConn(pgConn)
+	txProd, _ := producer.WithTxn(conn)
 	// Publish via producer (using pg_logical_emit_message)
-	publishedID, err := txProd.EmitEvent(
+	fact, err := common.NewFact("integration_test", eventID, "test.event", payload, metadata)
+	if err != nil {
+		t.Fatalf("Failed to create fact: %v", err)
+	}
+	publishedID, err := txProd.Emit(
 		ctx,
-		"integration_test", // aggregate type
-		eventID,            // aggregate ID
-		"test.event",       // event type
-		payload,            // payload
-		metadata,           // metadata
+		fact,
 	)
 	require.NoError(t, err, "Failed to publish test event via client")
 	require.NotEmpty(t, publishedID, "Published event ID should not be empty")

@@ -24,7 +24,7 @@ func ConvertUnixToTime(unix int64) time.Time {
 type OutboxClient interface {
 	// Publish publishes an event to the outbox
 	Publish(ctx context.Context, aggregateType, aggregateID, eventType string, payload []byte, metadata map[string]string) (string, error)
-	
+
 	// Close closes the client
 	Close() error
 }
@@ -33,10 +33,10 @@ type OutboxClient interface {
 type OutboxWorker interface {
 	// Start starts the worker
 	Start(ctx context.Context) error
-	
+
 	// Register registers a handler for a specific aggregate type
 	Register(aggregateType string, topic string, handler EventHandler) error
-	
+
 	// Close closes the worker
 	Close() error
 }
@@ -51,7 +51,7 @@ type EventHandler interface {
 type KafkaProducer interface {
 	// Produce produces a message to a Kafka topic
 	Produce(ctx context.Context, topic string, key []byte, value []byte, headers map[string][]byte) error
-	
+
 	// Close closes the producer
 	Close() error
 }
@@ -60,7 +60,7 @@ type KafkaProducer interface {
 type WALSubscriber interface {
 	// Subscribe subscribes to WAL events
 	Subscribe(ctx context.Context) (<-chan OutboxEvent, error)
-	
+
 	// Close closes the subscriber
 	Close() error
 }

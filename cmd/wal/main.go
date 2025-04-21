@@ -7,15 +7,17 @@ import (
 	"log"
 	"time"
 
+	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
 	// PostgreSQL connection string
-	connString := "postgres://postgres:postgres@localhost:6432/outbox_example?replication=database"
+	connString := "postgres://postgres:postgres@localhost:5432/westeros?replication=database"
 	if connString == "" {
 		log.Fatal("DATABASE_URL environment variable must be set")
 	}
@@ -35,7 +37,7 @@ func main() {
 	log.Printf("SystemID: %s Timeline: %d XLogPos: %d DBName: %s", sysident.SystemID, sysident.Timeline, sysident.XLogPos, sysident.DBName)
 
 	// Create a slot (if it doesn't exist)
-	slotName := "factlib_test_slot"
+	slotName := "factlib_slot"
 	_, err = pglogrepl.CreateReplicationSlot(context.Background(), conn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{Temporary: true})
 	if err != nil {
 		log.Printf("CreateReplicationSlot failed (may already exist): %v", err)
@@ -50,7 +52,7 @@ func main() {
 		pglogrepl.StartReplicationOptions{
 			PluginArgs: []string{
 				"proto_version '1'",
-				"publication_names 'factlib_test_pub'",
+				"publication_names 'facts'",
 				"messages 'true'",
 			},
 		})
@@ -142,9 +144,13 @@ func main() {
 
 				case *pglogrepl.LogicalDecodingMessage:
 					// This is what we're looking for - messages emitted via pg_logical_emit_message
-					fmt.Printf("Logical message received:\n")
+					p := pb.OutboxEvent{}
+					err = proto.Unmarshal(message.Content, &p)
+					if err != nil {
+						log.Fatalf("Failed to unmarshal OutboxEvent: %v", err)
+					}
 					fmt.Printf("  Prefix: %s\n", message.Prefix)
-					fmt.Printf("  Content: %s\n", string(message.Content))
+					fmt.Printf("  Content: %s\n", string(p.Payload))
 					fmt.Printf("  Transaction ID: %s\n", message.LSN.String())
 					fmt.Printf("  Raw message: %s\n", hex.EncodeToString(message.Content))
 
