@@ -12,4 +12,5 @@ message OutboxEvent {
   bytes payload = 5;
   int64 created_at = 6;
   map<string, string> metadata = 7;
+  map<string, string> trace_info = 8;
 }

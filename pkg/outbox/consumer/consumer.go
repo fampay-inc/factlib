@@ -18,7 +18,7 @@ const (
 // OutboxConsumer reads outbox events from PostgreSQL WAL and publishes them to handlers
 type OutboxConsumer struct {
 	walSubscriber *postgres.WALSubscriber
-	logger        *logger.Logger
+	logger        logger.Logger
 	Handlers      map[string]EventHandler
 	handlerAcks   chan *string
 	stopCh        chan struct{}
@@ -39,7 +39,7 @@ type Config struct {
 }
 
 // NewOutboxConsumer creates a new OutboxConsumer
-func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*OutboxConsumer, error) {
+func NewOutboxConsumer(ctx context.Context, cfg Config, log logger.Logger) (*OutboxConsumer, error) {
 	if cfg.ConnectionString == "" {
 		return nil, errors.New("connection string is required")
 	}
@@ -87,8 +87,8 @@ func NewOutboxConsumer(ctx context.Context, cfg Config, log *logger.Logger) (*Ou
 }
 
 // RegisterHandler registers a protobuf handler for a specific aggregate type
-func (s *OutboxConsumer) RegisterHandler(aggregateType string, handler EventHandler) {
-	s.Handlers[aggregateType] = handler
+func (s *OutboxConsumer) RegisterHandler(prefix string, handler EventHandler) {
+	s.Handlers[prefix] = handler
 }
 
 func (s *OutboxConsumer) RegiserHandlerAck(hAck chan *string) {
@@ -104,7 +104,7 @@ func (s *OutboxConsumer) Start(ctx context.Context) error {
 	}
 
 	// Start the event processor
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.processEvents(events)
 	go s.syncAck(ctx)
 
@@ -178,9 +178,11 @@ func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event)
 }
 
 func (s *OutboxConsumer) syncAck(ctx context.Context) {
+	defer s.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
+			s.logger.Info("Stopping ack synchronization due to context cancellation")
 			return
 		case ackPos := <-s.handlerAcks:
 			if ackPos == nil {
@@ -195,40 +197,7 @@ func (s *OutboxConsumer) syncAck(ctx context.Context) {
 	}
 }
 
-// const maxRetries = 3
-// retryDelay := 500 * time.Millisecond
-
-// // Process the event using the registered handler
-// var lastErr error
-// for i := 0; i < maxRetries; i++ {
-// 	// Create a context with timeout for each attempt
-// 	attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-// 	defer cancel()
-
-// 	// Process the event using the handler
-// 	err := handler(attemptCtx, event)
-// 	if err == nil {
-// 		// Success!
-// 		s.logger.Info("Successfully processed event",
-// 			"event_id", event.Outbox.Id,
-// 			"topic", topic,
-// 			"attempt", i+1)
-// 		return nil
-// 	}
-
-// 	lastErr = err
-// 	s.logger.Warn("Failed to process event, retrying",
-// 		"error", err.Error(),
-// 		"event_id", event.Outbox.Id,
-// 		"attempt", i+1,
-// 		"max_retries", maxRetries)
-
-// 	// Wait before retrying, but respect context cancellation
-// 	select {
-// 	case <-ctx.Done():
-// 		return errors.Wrap(ctx.Err(), "context cancelled during retry")
-// 	case <-time.After(retryDelay):
-// 		// Exponential backoff
-// 		retryDelay *= 2
-// 	}
-// }
+func (s *OutboxConsumer) IsWalConsumerHealthy() bool {
+	// Check if the WAL subscriber is healthy
+	return s.walSubscriber.IsHealthy()
+}

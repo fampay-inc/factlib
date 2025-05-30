@@ -56,13 +56,7 @@ func TestWALSubscriberIntegration(t *testing.T) {
 	}
 
 	// Configure logging
-	loggerConfig := logger.Config{
-		Level:      "debug",
-		WithCaller: true,
-	}
-
-	logr := logger.New(loggerConfig)
-	logr = logr.With("test", "wal_subscriber_integration")
+	logr := logger.New()
 
 	// Create context with timeout for the test
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)

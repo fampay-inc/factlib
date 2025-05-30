@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	"github.com/pkg/errors"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl/scram"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,18 +32,21 @@ type KafkaProducer interface {
 type KafkaAdapter struct {
 	client *kgo.Client
 	Acks   chan *string
-	logger *logger.Logger
+	logger logger.Logger
 }
 
 // KafkaConfig represents the configuration for the KafkaAdapter
 type KafkaConfig struct {
 	BootstrapServers []string
 	ClientID         string
-	RequiredAcks     int // -1 = all, 1 = leader only, 0 = no acks
+	RequiredAcks     int     // -1 = all, 1 = leader only, 0 = no acks
+	SSL              bool    // Enable SSL
+	User             *string // SASL user
+	Password         *string // SASL password
 }
 
 // NewKafkaAdapter creates a new KafkaAdapter
-func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error) {
+func NewKafkaAdapter(cfg KafkaConfig, log logger.Logger) (*KafkaAdapter, error) {
 	if len(cfg.BootstrapServers) == 0 {
 		return nil, errors.New("bootstrap servers is required")
 	}
@@ -68,7 +73,7 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		requiredAcks = kgo.AllISRAcks() // Default to all ISR acks
 	}
 
-	connectTimeout := 30 * time.Second
+	connectTimeout := 120 * time.Second
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.BootstrapServers...),
@@ -76,6 +81,16 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		kgo.RequiredAcks(requiredAcks),
 		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
 		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
+	}
+	if cfg.SSL {
+		log.Info("Using SSL for Kafka connection")
+		opts = append(opts, kgo.SASL(scram.Auth{
+			User: *cfg.User,
+			Pass: *cfg.Password,
+		}.AsSha512Mechanism()))
+		opts = append(opts, kgo.DialTLSConfig(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}))
 	}
 
 	client, err := kgo.NewClient(opts...)
@@ -95,7 +110,6 @@ func NewKafkaAdapter(cfg KafkaConfig, log *logger.Logger) (*KafkaAdapter, error)
 		Topic: "_ping",
 		Value: []byte("host-" + hostname),
 	}
-
 	out := client.ProduceSync(ctx, pingRecord)
 	if err := out.FirstErr(); err != nil {
 		log.Fatal("ping record error", err)
@@ -164,12 +178,7 @@ func (a *KafkaAdapter) Close() error {
 }
 
 // KafkaEventHandler creates an event handler that publishes protobuf events to Kafka
-func KafkaEventHandler(producer KafkaProducer) EventHandler {
-	loggerConfig := logger.Config{
-		Level:      "debug",
-		WithCaller: true,
-	}
-	log := logger.New(loggerConfig)
+func KafkaEventHandler(producer KafkaProducer, logger logger.Logger) EventHandler {
 	return func(ctx context.Context, event *postgres.Event) error {
 		// Use aggregate ID as the key for partitioning
 		key := []byte(event.Outbox.AggregateId)
@@ -186,14 +195,19 @@ func KafkaEventHandler(producer KafkaProducer) EventHandler {
 			"LSN":        event.XLogPos.String(),
 		}
 
+		// Enrich trace information into headers
+		for key, value := range event.Outbox.TraceInfo {
+			headers[key] = value
+		}
+
 		topic := fmt.Sprintf("%s.%s", event.OutboxPrefix, event.Outbox.AggregateType)
-		log.Debug("Attempting to produce message to Kafka",
+		logger.Debug("Attempting to produce message to Kafka",
 			"topic", topic,
 			"key", string(key))
 		if err := producer.Produce(ctx, topic, key, value, headers); err != nil {
 			return errors.Wrap(err, "failed to produce message")
 		}
-		log.Debug("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic, "key", string(key))
+		logger.Debug("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic, "key", string(key))
 		return nil
 	}
 }

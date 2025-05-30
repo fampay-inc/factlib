@@ -75,7 +75,7 @@ func TestRegisterHandler(t *testing.T) {
 
 func TestHandleMessage(t *testing.T) {
 	// Create a new consumer
-	log := &logger.Logger{}
+	log := logger.New()
 	consumer := &OutboxConsumer{
 		logger:   log,
 		Handlers: make(map[string]EventHandler),

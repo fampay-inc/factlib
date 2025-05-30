@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
@@ -20,26 +21,23 @@ type AppConfig struct {
 	OutboxPrefix        string
 }
 
-var log *logger.Logger
+var log logger.Logger
 var cfg AppConfig
 
 func init() {
-	loggerConfig := logger.Config{
-		Level:      "debug",
-		WithCaller: true,
-	}
-	log = logger.New(loggerConfig)
+	log = logger.New()
 
 	cfg = AppConfig{
-		DatabaseURL:         "postgres://postgres:postgres@localhost:6432/outbox_example",
-		ReplicationSlotName: "outbox_slot",
-		PublicationName:     "outbox_pub",
-		OutboxPrefix:        "westeros_app",
+		DatabaseURL:         "postgres://postgres:postgres@localhost:5432/westeros",
+		ReplicationSlotName: "factlib_slot",
+		PublicationName:     "facts",
+		OutboxPrefix:        "westeros",
 	}
 }
 
 func main() {
 	outboxService := flag.Bool("outbox", false, "Run outbox service")
+	fmt.Println(outboxService)
 	flag.Parse()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -81,7 +79,7 @@ func OutboxService(ctx context.Context) error {
 
 	// Set up Kafka with exactly-once semantics
 	kafkaConfig := consumer.KafkaConfig{
-		BootstrapServers: []string{"127.0.0.1:9092"}, // Use localhost instead of container name
+		BootstrapServers: []string{"127.0.0.1:9093"}, // Use localhost instead of container name
 		ClientID:         "outbox-service",
 		RequiredAcks:     -1, // All ISR acks
 	}
@@ -106,7 +104,7 @@ func OutboxService(ctx context.Context) error {
 	defer outboxConsumer.Stop()
 
 	// Register handler for user events
-	outboxConsumer.RegisterHandler(cfg.OutboxPrefix, consumer.KafkaEventHandler(kafkaAdapter))
+	outboxConsumer.RegisterHandler(cfg.OutboxPrefix, consumer.KafkaEventHandler(kafkaAdapter, log))
 	outboxConsumer.RegiserHandlerAck(kafkaAdapter.Acks)
 	// Start the consumer
 	if err := outboxConsumer.Start(ctx); err != nil {

@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
+
+	"git.famapp.in/fampay-inc/factlib/pkg/common"
 )
 
 type SQLExecutor interface {
@@ -10,6 +11,6 @@ type SQLExecutor interface {
 }
 
 type OutboxProducer interface {
-	Emit(ctx context.Context, fact *pb.OutboxEvent) (string, error)
+	Emit(ctx context.Context, fact *common.Fact) (string, error)
 	WithPrefix(prefix string) OutboxProducer
 }

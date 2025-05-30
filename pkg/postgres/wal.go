@@ -41,9 +41,9 @@ type WALSubscriber struct {
 	ctx            context.Context
 	replConn       *pgconn.PgConn // Connection for replication
 	queryConn      *pgx.Conn      // Connection for regular queries
-	logger         *logger.Logger
+	logger         logger.Logger
 	events         chan *Event
-	ConsumerHealth ConsumerHealth
+	ConsumerHealth *ConsumerHealth
 
 	xLogPos    pglogrepl.LSN
 	AckXLogPos chan *pglogrepl.LSN
@@ -54,7 +54,7 @@ type WALSubscriber struct {
 }
 
 // NewWALSubscriber creates a new WAL subscriber
-func NewWALSubscriber(ctx context.Context, cfg WALConfig, log *logger.Logger) (*WALSubscriber, error) {
+func NewWALSubscriber(ctx context.Context, cfg WALConfig, log logger.Logger) (*WALSubscriber, error) {
 	// Create a separate connection for replication
 	replUrl := fmt.Sprintf("%s?replication=database", cfg.DatabaseURL)
 	replConn, err := pgconn.Connect(ctx, replUrl)
@@ -73,13 +73,14 @@ func NewWALSubscriber(ctx context.Context, cfg WALConfig, log *logger.Logger) (*
 	}
 
 	return &WALSubscriber{
-		cfg:        cfg,
-		ctx:        ctx,
-		replConn:   replConn,
-		queryConn:  queryConn,
-		logger:     log,
-		events:     make(chan *Event, 1000),
-		AckXLogPos: make(chan *pglogrepl.LSN, 10),
+		cfg:            cfg,
+		ctx:            ctx,
+		replConn:       replConn,
+		queryConn:      queryConn,
+		logger:         log,
+		events:         make(chan *Event, 1000),
+		AckXLogPos:     make(chan *pglogrepl.LSN, 10),
+		ConsumerHealth: &ConsumerHealth{},
 	}, nil
 }
 
@@ -237,6 +238,10 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	// Identify the system to get the current WAL position
 	var err error
 	w.xLogPos, err = w.getxLogPos()
+	if err != nil {
+		w.logger.Error("failed to get xLogPos", err, "error", err.Error())
+		return
+	}
 	// Start logical replication using the pglogrepl library
 	err = pglogrepl.StartReplication(ctx, w.replConn, w.cfg.ReplicationSlotName, w.xLogPos, pglogrepl.StartReplicationOptions{
 		PluginArgs: []string{
@@ -437,4 +442,8 @@ func (w *WALSubscriber) processLogicalMessage(ctx context.Context, msg pglogrepl
 	} else {
 		w.logger.Debug("Received unexpected message type", "type", fmt.Sprintf("%T", msg))
 	}
+}
+
+func (w *WALSubscriber) IsHealthy() bool {
+	return w.ConsumerHealth.GetHealth()
 }

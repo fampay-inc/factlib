@@ -1,0 +1,49 @@
+# Stage 1: Build the application
+FROM golang:1.24.1 as builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy go.mod and go.sum files
+COPY go.mod go.sum ./
+
+# Download dependencies
+WORKDIR /app
+
+RUN apt-get install ca-certificates && update-ca-certificates
+RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+ARG GIT_USERNAME
+ARG GIT_BASE_URL
+
+COPY . ./
+
+RUN go env -w GOINSECURE='git.famapp.in/*'
+RUN go env -w GOPRIVATE='git.famapp.in/fampay-inc/*'
+
+RUN --mount=type=secret,id=GIT_TOKEN export GIT_TOKEN=$(cat /run/secrets/GIT_TOKEN) && git config --global url."https://${GIT_USERNAME}:${GIT_TOKEN}@${GIT_BASE_URL}".insteadOf "https://${GIT_BASE_URL}" && go mod download
+
+# Copy the source code
+COPY . .
+
+# Build the application
+RUN just build-owlpost
+
+# Stage 2: Create the runtime image
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata
+
+# Set working directory
+WORKDIR /app
+
+# Copy the binary from the builder stage
+COPY --from=builder /app/dist/app /app/owlpost
+
+# Create a non-root user to run the application
+RUN adduser -D -g '' appuser
+USER appuser
+
+# Run the application
+CMD ["./owlpost"]

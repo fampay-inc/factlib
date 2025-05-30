@@ -38,9 +38,21 @@ func main() {
 
 	// Create a slot (if it doesn't exist)
 	slotName := "factlib_slot"
-	_, err = pglogrepl.CreateReplicationSlot(context.Background(), conn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{Temporary: true})
+	_, err = pglogrepl.CreateReplicationSlot(context.Background(), conn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{Temporary: false})
 	if err != nil {
 		log.Printf("CreateReplicationSlot failed (may already exist): %v", err)
+	}
+
+	// Get last lsn
+	masterDbConn, err := pgx.Connect(context.Background(), "postgres://postgres:postgres@localhost:5432/westeros")
+	if err != nil {
+		log.Fatalf("Failed to connect for querying: %v", err)
+	}
+	defer masterDbConn.Close(context.Background())
+	var lastLSN pglogrepl.LSN
+	err = masterDbConn.QueryRow(context.Background(), "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1;", slotName).Scan(&lastLSN)
+	if err != nil {
+		log.Fatalf("Failed to get last LSN: %v", err)
 	}
 
 	// Start replication
@@ -48,7 +60,7 @@ func main() {
 		context.Background(),
 		conn,
 		slotName,
-		sysident.XLogPos,
+		lastLSN,
 		pglogrepl.StartReplicationOptions{
 			PluginArgs: []string{
 				"proto_version '1'",
