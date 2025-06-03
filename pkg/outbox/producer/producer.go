@@ -60,8 +60,14 @@ func (a *PostgresAdapter) Emit(ctx context.Context, fact *common.Fact) (string, 
 		EventType:     fact.EventType,
 		Payload:       fact.Payload,
 		Metadata:      fact.Metadata,
-		TraceInfo:     fact.TraceInfo,
-		CreatedAt:     time.Now().UTC().UnixNano(),
+		TraceInfo: &pb.TraceInfo{
+			TraceId: fact.TraceInfo.TraceId,
+			SpanId:  fact.TraceInfo.SpanId,
+			Metadata: map[string]string{
+				"parent_op": fact.TraceInfo.ParentOp,
+			},
+		},
+		CreatedAt: time.Now().UTC().UnixNano(),
 	}
 	protoBytes, err := proto.Marshal(outboxEvent)
 	if err != nil {

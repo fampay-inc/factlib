@@ -10,7 +10,13 @@ type Fact struct {
 	EventType     string
 	Payload       []byte
 	Metadata      map[string]string
-	TraceInfo     map[string]string
+	TraceInfo     *TraceInfo
+}
+
+type TraceInfo struct {
+	TraceId  string
+	SpanId   string
+	ParentOp string
 }
 
 func (f *Fact) Validate() error {

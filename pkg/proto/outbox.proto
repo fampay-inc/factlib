@@ -12,5 +12,11 @@ message OutboxEvent {
   bytes payload = 5;
   int64 created_at = 6;
   map<string, string> metadata = 7;
-  map<string, string> trace_info = 8;
+  optional TraceInfo trace_info = 8;
+}
+
+message TraceInfo {
+  string trace_id = 1;
+  string span_id = 2;
+  map<string, string> metadata = 3;
 }

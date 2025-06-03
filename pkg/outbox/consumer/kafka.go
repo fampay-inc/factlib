@@ -187,7 +187,6 @@ func KafkaEventHandler(producer KafkaProducer, logger logger.Logger) EventHandle
 		if err != nil {
 			return errors.Wrap(err, "failed to marshal proto event")
 		}
-
 		// Create headers
 		headers := map[string]string{
 			"event_id":   event.Outbox.Id,
@@ -195,9 +194,17 @@ func KafkaEventHandler(producer KafkaProducer, logger logger.Logger) EventHandle
 			"LSN":        event.XLogPos.String(),
 		}
 
-		// Enrich trace information into headers
-		for key, value := range event.Outbox.TraceInfo {
-			headers[key] = value
+		// Trace info
+		var traceId string
+		if event.Outbox.TraceInfo != nil && event.Outbox.TraceInfo.TraceId != "" {
+			traceId = event.Outbox.TraceInfo.TraceId
+			headers["trace_id"] = event.Outbox.TraceInfo.TraceId
+			headers["span_id"] = event.Outbox.TraceInfo.SpanId
+			for k, v := range event.Outbox.TraceInfo.Metadata {
+				headers[k] = v
+			}
+		} else {
+			traceId = "unknown"
 		}
 
 		topic := fmt.Sprintf("%s.%s", event.OutboxPrefix, event.Outbox.AggregateType)
@@ -205,9 +212,11 @@ func KafkaEventHandler(producer KafkaProducer, logger logger.Logger) EventHandle
 			"topic", topic,
 			"key", string(key))
 		if err := producer.Produce(ctx, topic, key, value, headers); err != nil {
+			logger.Error("failed to produce message to Kafka", "error", err, "event_id", event.Outbox.Id, "topic", topic, "key", string(key), "trace_id", traceId)
 			return errors.Wrap(err, "failed to produce message")
 		}
 		logger.Debug("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic, "key", string(key))
+		logger.Info("produced", "topic", topic, "event_id", event.Outbox.Id, "trace_id", traceId, "aggregate_id", event.Outbox.AggregateId)
 		return nil
 	}
 }

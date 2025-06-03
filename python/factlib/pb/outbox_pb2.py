@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16pkg/proto/outbox.proto\x12\x05proto\"\xce\x02\n\x0bOutboxEvent\x12\n\n\x02id\x18\x01 \x01(\t\x12\x16\n\x0e\x61ggregate_type\x18\x02 \x01(\t\x12\x14\n\x0c\x61ggregate_id\x18\x03 \x01(\t\x12\x12\n\nevent_type\x18\x04 \x01(\t\x12\x0f\n\x07payload\x18\x05 \x01(\x0c\x12\x12\n\ncreated_at\x18\x06 \x01(\x03\x12\x32\n\x08metadata\x18\x07 \x03(\x0b\x32 .proto.OutboxEvent.MetadataEntry\x12\x35\n\ntrace_info\x18\x08 \x03(\x0b\x32!.proto.OutboxEvent.TraceInfoEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x1a\x30\n\x0eTraceInfoEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42,Z*git.famapp.in/fampay-inc/factlib/pkg/protob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16pkg/proto/outbox.proto\x12\x05proto\"\x9f\x02\n\x0bOutboxEvent\x12\n\n\x02id\x18\x01 \x01(\t\x12\x16\n\x0e\x61ggregate_type\x18\x02 \x01(\t\x12\x14\n\x0c\x61ggregate_id\x18\x03 \x01(\t\x12\x12\n\nevent_type\x18\x04 \x01(\t\x12\x0f\n\x07payload\x18\x05 \x01(\x0c\x12\x12\n\ncreated_at\x18\x06 \x01(\x03\x12\x32\n\x08metadata\x18\x07 \x03(\x0b\x32 .proto.OutboxEvent.MetadataEntry\x12)\n\ntrace_info\x18\x08 \x01(\x0b\x32\x10.proto.TraceInfoH\x00\x88\x01\x01\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\r\n\x0b_trace_info\"\x91\x01\n\tTraceInfo\x12\x10\n\x08trace_id\x18\x01 \x01(\t\x12\x0f\n\x07span_id\x18\x02 \x01(\t\x12\x30\n\x08metadata\x18\x03 \x03(\x0b\x32\x1e.proto.TraceInfo.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42,Z*git.famapp.in/fampay-inc/factlib/pkg/protob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -24,12 +24,14 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   DESCRIPTOR._serialized_options = b'Z*git.famapp.in/fampay-inc/factlib/pkg/proto'
   _OUTBOXEVENT_METADATAENTRY._options = None
   _OUTBOXEVENT_METADATAENTRY._serialized_options = b'8\001'
-  _OUTBOXEVENT_TRACEINFOENTRY._options = None
-  _OUTBOXEVENT_TRACEINFOENTRY._serialized_options = b'8\001'
+  _TRACEINFO_METADATAENTRY._options = None
+  _TRACEINFO_METADATAENTRY._serialized_options = b'8\001'
   _globals['_OUTBOXEVENT']._serialized_start=34
-  _globals['_OUTBOXEVENT']._serialized_end=368
-  _globals['_OUTBOXEVENT_METADATAENTRY']._serialized_start=271
-  _globals['_OUTBOXEVENT_METADATAENTRY']._serialized_end=318
-  _globals['_OUTBOXEVENT_TRACEINFOENTRY']._serialized_start=320
-  _globals['_OUTBOXEVENT_TRACEINFOENTRY']._serialized_end=368
+  _globals['_OUTBOXEVENT']._serialized_end=321
+  _globals['_OUTBOXEVENT_METADATAENTRY']._serialized_start=259
+  _globals['_OUTBOXEVENT_METADATAENTRY']._serialized_end=306
+  _globals['_TRACEINFO']._serialized_start=324
+  _globals['_TRACEINFO']._serialized_end=469
+  _globals['_TRACEINFO_METADATAENTRY']._serialized_start=259
+  _globals['_TRACEINFO_METADATAENTRY']._serialized_end=306
 # @@protoc_insertion_point(module_scope)

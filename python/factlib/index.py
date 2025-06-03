@@ -1,8 +1,8 @@
-import time
+from datetime import datetime, timezone
 from typing import Dict, Optional
 from django.db import connection
 from django.conf import settings
-from factlib.pb.outbox_pb2 import OutboxEvent
+from factlib.pb.outbox_pb2 import OutboxEvent, TraceInfo
 import sentry_sdk
 
 class PostgresFactMixin:
@@ -58,20 +58,19 @@ class Fact(PostgresFactMixin):
             aggregate_id=aggregate_id,
             event_type=event_type,
             payload=payload,
-            created_at=int(time.time()),
+            created_at=int(datetime.now(timezone.utc).timestamp() * 1_000_000),  # Convert to microseconds
             metadata=processed_metadata,
             trace_info=trace_info,
         )
         prefix = prefix or settings.FACTLIB_PREFIX
         super().__init__(self._event, prefix)
 
-    def _get_trace_context(self) -> Dict[str, str]:
+    def _get_trace_context(self) -> TraceInfo:
         span = sentry_sdk.Hub.current.scope.span
         if span is None:
             return {}
-
-        return {
-            "trace_id": span.trace_id,
-            "span_id": span.span_id,
-            "op": span.op or "",
-        }
+        return TraceInfo(
+            trace_id=span.trace_id,
+            span_id=span.span_id,
+            metadata={"parent_op": span.op or ""}
+        )
