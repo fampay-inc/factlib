@@ -47,8 +47,7 @@ func main() {
 			logger.Infof("Database connection closed successfully.")
 		}
 	}()
-	logger.Infof("Connected to database: %s", cfg.MasterDbURL)
-
+	logger.Info("Connected to database successfully.")
 	kafkaConfig := consumer.KafkaConfig{
 		BootstrapServers: cfg.KafkaBrokers,
 		ClientID:         cfg.Name + "." + cfg.SrcSvc,
