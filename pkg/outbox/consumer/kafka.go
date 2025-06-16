@@ -216,7 +216,7 @@ func KafkaEventHandler(producer KafkaProducer, logger logger.Logger) EventHandle
 			return errors.Wrap(err, "failed to produce message")
 		}
 		logger.Debug("Successfully produced message to Kafka", "event_id", event.Outbox.Id, "topic", topic, "key", string(key))
-		logger.Info("produced", "topic", topic, "event_id", event.Outbox.Id, "trace_id", traceId, "aggregate_id", event.Outbox.AggregateId)
+		logger.Info("produced", "topic", topic, "event_id", event.Outbox.Id, "trace_id", traceId, "aggregate_id", event.Outbox.AggregateId, "lsn", event.XLogPos.String())
 		return nil
 	}
 }
