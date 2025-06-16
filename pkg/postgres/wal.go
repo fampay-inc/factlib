@@ -79,7 +79,7 @@ func NewWALSubscriber(ctx context.Context, cfg WALConfig, log logger.Logger) (*W
 		queryConn:      queryConn,
 		logger:         log,
 		events:         make(chan *Event, 1000),
-		AckXLogPos:     make(chan *pglogrepl.LSN, 10),
+		AckXLogPos:     make(chan *pglogrepl.LSN, 10000),
 		ConsumerHealth: &ConsumerHealth{},
 	}, nil
 }

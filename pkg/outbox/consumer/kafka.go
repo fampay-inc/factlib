@@ -119,7 +119,7 @@ func NewKafkaAdapter(cfg KafkaConfig, log logger.Logger) (*KafkaAdapter, error) 
 
 	return &KafkaAdapter{
 		client: client,
-		Acks:   make(chan *string, 10),
+		Acks:   make(chan *string, 1000),
 		logger: log,
 	}, nil
 }
