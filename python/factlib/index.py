@@ -72,5 +72,5 @@ class Fact(PostgresFactMixin):
         return TraceInfo(
             trace_id=span.trace_id,
             span_id=span.span_id,
-            metadata={"parent_op": span.op or ""}
+            metadata={"parent_op": span.op or "", "is_sampled": "1" if span.sampled else "0"},
         )
