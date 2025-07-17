@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/metrics"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	"github.com/pkg/errors"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -144,15 +145,21 @@ func (a *KafkaAdapter) Produce(ctx context.Context, topic string, key []byte, va
 		Headers: kafkaHeaders,
 	}
 	// Produce record with timeout
+	start := time.Now()
 	bCtx := context.Background()
 	a.client.Produce(bCtx, record, func(r *kgo.Record, err error) {
+		latency := time.Since(start).Seconds()
 		if err != nil {
+			metrics.KafkaProduceFailures.WithLabelValues(topic, "produce_error").Inc()
+			metrics.KafkaProduceLatency.WithLabelValues(topic).Observe(latency)
 			a.logger.Error("Failed to produce message to Kafka",
 				err,
 				"topic", topic,
 				"key", string(record.Key))
 			return
 		}
+		metrics.KafkaProduceSuccess.WithLabelValues(topic).Inc()
+		metrics.KafkaProduceLatency.WithLabelValues(topic).Observe(latency)
 		var pos string
 		for _, rh := range r.Headers {
 			if rh.Key == AckPosKey {

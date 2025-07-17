@@ -21,6 +21,8 @@ type Config struct {
 	WALHealthPort       int    `env:"WAL_HEALTH_PORT" envDefault:"3001"`
 	ReplicationSlotName string `env:"REPLICATION_SLOT_NAME" envDefault:"factlib_slot"`
 	PublicationName     string `env:"PUBLICATION_NAME" envDefault:"facts"`
+
+	MetricsPort int `env:"METRICS_PORT" envDefault:"2112"`
 }
 
 var appConfig *Config

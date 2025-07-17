@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/metrics"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	"github.com/jackc/pglogrepl"
 	"github.com/pkg/errors"
@@ -144,6 +145,10 @@ func (s *OutboxConsumer) processEvents(events <-chan *postgres.Event) {
 				return
 			}
 
+			metrics.EventsConsumed.WithLabelValues(
+				event.Outbox.AggregateType,
+				event.Outbox.EventType,
+			).Inc()
 			s.logger.Debug("Received event from WAL",
 				"id", event.Outbox.Id,
 				"aggregate_type", event.Outbox.AggregateType,
@@ -165,7 +170,11 @@ func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event)
 		return
 	}
 
+	handlerStart := time.Now()
+	latency := time.Since(handlerStart).Seconds()
 	if err := handler(ctx, event); err != nil {
+		metrics.EventHandlerFailures.WithLabelValues(event.Outbox.AggregateType, event.Outbox.EventType, "handler_error").Inc()
+		metrics.EventHandlerLatency.WithLabelValues(event.Outbox.AggregateType, event.Outbox.EventType).Observe(latency)
 		s.logger.Error("Failed to handle event",
 			err,
 			"id", event.Outbox.Id,
@@ -173,6 +182,8 @@ func (s *OutboxConsumer) handleEvent(ctx context.Context, event *postgres.Event)
 			"event_type", event.Outbox.EventType)
 		return
 	}
+	metrics.EventHandlerSuccess.WithLabelValues(event.Outbox.AggregateType, event.Outbox.EventType).Inc()
+	metrics.EventHandlerLatency.WithLabelValues(event.Outbox.AggregateType, event.Outbox.EventType).Observe(latency)
 
 	s.logger.Debug("Successfully processed event", "id", event.Outbox.Id)
 }

@@ -4,6 +4,13 @@ import (
 	"errors"
 )
 
+type IsSampled string
+
+const (
+	IsSampledTrue  IsSampled = "1"
+	IsSampledFalse IsSampled = "0"
+)
+
 type Fact struct {
 	AggregateType string
 	AggregateID   string
@@ -14,9 +21,10 @@ type Fact struct {
 }
 
 type TraceInfo struct {
-	TraceId  string
-	SpanId   string
-	ParentOp string
+	TraceId   string
+	SpanId    string
+	ParentOp  string
+	IsSampled string
 }
 
 func (f *Fact) Validate() error {

@@ -7,6 +7,7 @@ import (
 
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/metrics"
 	"github.com/google/uuid"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
@@ -239,6 +240,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 	var err error
 	w.xLogPos, err = w.getxLogPos()
 	if err != nil {
+		metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "get_xlogpos").Inc()
 		w.logger.Error("failed to get xLogPos", err, "error", err.Error())
 		return
 	}
@@ -257,6 +259,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 		"position", w.xLogPos.String())
 
 	if err != nil {
+		metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "start_replication").Inc()
 		w.logger.Error("failed to start replication", err, "error", err.Error())
 		return
 	}
@@ -284,6 +287,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				ClientTime:       time.Now(),
 			})
 			if err != nil {
+				metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "standby_status_update").Inc()
 				w.logger.Error("failed to send standby status update", err, "error", err.Error())
 				return
 			}
@@ -301,8 +305,10 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				// This is just a timeout, continue
 				continue
 			} else if pgErr, ok := err.(*pgconn.PgError); ok {
+				metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "pg_error").Inc()
 				w.logger.Error("received PG error", pgErr, "code", pgErr.Code)
 			} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "receive_message").Inc()
 				w.logger.Error("failed to receive message", err, "error", err.Error())
 			}
 			continue
@@ -317,6 +323,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				// Process keepalive messages from the primary
 				pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
 				if err != nil {
+					metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "parse_keepalive").Inc()
 					w.logger.Error("failed to parse primary keepalive message", err, "error", err.Error())
 					continue
 				}
@@ -332,6 +339,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 						WALWritePosition: w.xLogPos,
 					})
 					if err != nil {
+						metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "reply_requested").Inc()
 						w.logger.Error("failed to send standby status update", err, "error", err.Error())
 						return
 					}
@@ -343,6 +351,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				// Process actual WAL data
 				xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
 				if err != nil {
+					metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "parse_xlogdata").Inc()
 					w.logger.Error("failed to parse XLog data", err, "error", err.Error())
 					continue
 				}
@@ -353,6 +362,7 @@ func (w *WALSubscriber) startReplication(ctx context.Context) {
 				// Parse the logical replication message
 				logicalMsg, err := pglogrepl.Parse(xld.WALData)
 				if err != nil {
+					metrics.WALReplicationErrors.WithLabelValues(w.cfg.ReplicationSlotName, "parse_logical_msg").Inc()
 					w.logger.Error("failed to parse logical replication message", err,
 						"error", err.Error(),
 						"data_size", len(xld.WALData),

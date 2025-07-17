@@ -6,6 +6,7 @@ import (
 
 	"git.famapp.in/fampay-inc/factlib/pkg/common"
 	"git.famapp.in/fampay-inc/factlib/pkg/logger"
+	"git.famapp.in/fampay-inc/factlib/pkg/metrics"
 	"git.famapp.in/fampay-inc/factlib/pkg/postgres"
 	pb "git.famapp.in/fampay-inc/factlib/pkg/proto"
 	"github.com/google/uuid"
@@ -47,10 +48,12 @@ func (a *PostgresAdapter) WithPrefix(prefix string) postgres.OutboxProducer {
 func (a *PostgresAdapter) Emit(ctx context.Context, fact *common.Fact) (string, error) {
 	err := fact.Validate()
 	if err != nil {
+		metrics.EmitFailures.WithLabelValues(fact.AggregateType, fact.EventType, "validation").Inc()
 		return "", errors.Wrap(err, "failed to validate fact")
 	}
 	eventId, err := uuid.NewV7()
 	if err != nil {
+		metrics.EmitFailures.WithLabelValues(fact.AggregateType, fact.EventType, "uuid").Inc()
 		return "", errors.Wrap(err, "failed to generate event ID")
 	}
 	outboxEvent := &pb.OutboxEvent{
@@ -64,21 +67,28 @@ func (a *PostgresAdapter) Emit(ctx context.Context, fact *common.Fact) (string, 
 			TraceId: fact.TraceInfo.TraceId,
 			SpanId:  fact.TraceInfo.SpanId,
 			Metadata: map[string]string{
-				"parent_op": fact.TraceInfo.ParentOp,
+				"parent_op":  fact.TraceInfo.ParentOp,
+				"is_sampled": fact.TraceInfo.IsSampled,
 			},
 		},
 		CreatedAt: time.Now().UTC().UnixNano(),
 	}
 	protoBytes, err := proto.Marshal(outboxEvent)
 	if err != nil {
+		metrics.EmitFailures.WithLabelValues(fact.AggregateType, fact.EventType, "marshal").Inc()
 		return "", errors.Wrap(err, "failed to marshal proto event")
 	}
 	sqlQuery := "SELECT pg_logical_emit_message(true, $1, $2::bytea)"
+	start := time.Now()
 	err = a.conn.Exec(ctx, sqlQuery, a.prefix, protoBytes)
+	latency := time.Since(start).Seconds()
 
 	if err != nil {
+		metrics.EmitFailures.WithLabelValues(fact.AggregateType, fact.EventType, "emit").Inc()
 		return "", errors.Wrap(err, "failed to emit logical message")
 	}
+	metrics.EventsEmitted.WithLabelValues(outboxEvent.AggregateType, outboxEvent.EventType).Inc()
+	metrics.EventProcessingLatency.WithLabelValues(outboxEvent.AggregateType, outboxEvent.EventType).Observe(latency)
 	a.logger.Debug("emitted message",
 		"id", outboxEvent.Id,
 		"aggregate_id", outboxEvent.AggregateId,

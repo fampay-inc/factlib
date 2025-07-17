@@ -7,7 +7,10 @@ import (
 	"sync"
 	"syscall"
 
+	"git.famapp.in/fampay-inc/factlib/pkg/metrics"
+
 	healthHttp "git.famapp.in/fampay-inc/factlib/cmd/owlpost/delivery/health"
+	owlpostmetrics "git.famapp.in/fampay-inc/factlib/cmd/owlpost/delivery/metrics"
 	"git.famapp.in/fampay-inc/factlib/cmd/owlpost/utils"
 	"git.famapp.in/fampay-inc/factlib/pkg/outbox/consumer"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +20,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	logger := utils.GetAppLogger()
+
+	// Register metrics as early as possible
+	cfg := utils.GetConfig()
+	metrics.Register()
+
+	// Start Prometheus metrics server using delivery/metrics
+	owlpostmetrics.StartMetricsServer(cfg.MetricsPort)
 
 	// Set up signal handling
 	sigs := make(chan os.Signal, 1)
@@ -33,7 +43,6 @@ func main() {
 	}()
 
 	logger.Infof("Starting owlpost application for: %s", utils.GetConfig().SrcSvc)
-	cfg := utils.GetConfig()
 
 	pgConn, err := pgx.Connect(ctx, cfg.MasterDbURL)
 	if err != nil {
