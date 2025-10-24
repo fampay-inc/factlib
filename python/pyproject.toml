@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.8.1"
-protobuf = "4.23.4"
+protobuf = "4.25.8"
 grpcio = "^1.56.0"
 django = "2.2.5"
 setuptools = "<78.0.0"
